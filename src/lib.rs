@@ -1,10 +1,17 @@
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::io::{Read, Seek, SeekFrom};
 use std::str::Utf8Error;
-use std::sync::atomic::spin_loop_hint;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum FileType {
+    Verilog = 0,
+    Vhdl = 1,
+    VerilogVhdl = 2,
 }
 
 #[repr(u8)]
@@ -23,6 +30,124 @@ enum BlockType {
     Skip = 255,
 }
 
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum ScopeType {
+    // VCD
+    Module = 0,
+    Task = 1,
+    Function = 2,
+    Begin = 3,
+    Fork = 4,
+    Generate = 5,
+    Struct = 6,
+    Union = 7,
+    Class = 8,
+    Interface = 9,
+    Package = 10,
+    Program = 11,
+    // VHDL
+    VhdlArchitecture = 12,
+    VhdlProcedure = 13,
+    VhdlFunction = 14,
+    VhdlRecord = 15,
+    VhdlProcess = 16,
+    VhdlBlock = 17,
+    VhdlForGenerate = 18,
+    VhdlIfGenerate = 19,
+    VhdlGenerate = 20,
+    VhdlPackage = 21,
+    //
+    AttributeBegin = 252,
+    AttributeEnd = 253,
+    //
+    VcdScope = 254,
+    VcdUpScope = 255,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum VarType {
+    // VCD
+    Event = 0,
+    Integer = 1,
+    Parameter = 2,
+    Real = 3,
+    RealParameter = 4,
+    Reg = 5,
+    Supply0 = 6,
+    Supply1 = 7,
+    Time = 8,
+    Tri = 9,
+    TriAnd = 10,
+    TriOr = 11,
+    TriReg = 12,
+    Tri0 = 13,
+    Tri1 = 14,
+    Wand = 15, // or WAnd ?
+    Wire = 16,
+    Wor = 17, // or WOr?
+    Port = 18,
+    SparseArray = 19,
+    RealTime = 20,
+    GenericString = 21,
+    // System Verilog
+    Bit = 22,
+    Logic = 23,
+    Int = 24,
+    ShortInt = 25,
+    LongInt = 26,
+    Byte = 27,
+    Enum = 28,
+    ShortReal = 29,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum VarDirection {
+    Implicit = 0,
+    Input = 1,
+    Output = 2,
+    InOut = 3,
+    Buffer = 4,
+    Linkage = 5,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum HierarchyType {
+    Scope = 0,
+    UpScope = 1,
+    Var = 2,
+    AttributeBegin = 3,
+    AttributeEnd = 4,
+    TreeBegin = 5,
+    TreeEnd = 6,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum AttributeType {
+    Misc = 0,
+    Array = 1,
+    Enum = 2,
+    Pack = 3,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive)]
+enum MiscType {
+    Comment = 0,
+    EnvVar = 1,
+    SupVar = 2,
+    PathName = 3,
+    SourceStem = 4,
+    SourceInstantiationStem = 5,
+    ValueList = 6,
+    EnumTable = 7,
+    Unknown = 8,
+}
+
 const DOUBLE_ENDIAN_TEST: f64 = 2.7182818284590452354;
 
 struct Header {
@@ -36,7 +161,7 @@ struct Header {
     timescale_exponent: i8,
     version: String,
     date: String,
-    file_type: u8,
+    file_type: FileType,
     time_zero: u64,
 }
 
@@ -95,7 +220,7 @@ fn get_variant_32(bytes: &[u8]) -> Result<(u32, usize)> {
     // read bits, 7 at a time
     let mut res = 0u32;
     for bb in bytes.iter().take(len).rev() {
-        res = (res << 7) | (bb & 0x7f)
+        res = (res << 7) | ((*bb as u32) & 0x7f)
     }
     Ok((res, len))
 }
@@ -135,10 +260,18 @@ impl<R: Read + Seek> Reader<R> {
         Ok(i8::from_be_bytes(self.buf[..1].try_into().unwrap()))
     }
 
+    #[inline] // inline to specialize on length
     fn read_string(&mut self, len: usize) -> Result<String> {
+        assert!(len <= 128);
         self.input.read_exact(&mut self.buf[..len])?;
         let zero_index = self.buf.iter().position(|b| *b == 0u8).unwrap_or(len - 1);
         Ok((std::str::from_utf8(&self.buf[..(zero_index + 1)])?).to_string())
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
+        let mut buf: Vec<u8> = Vec::with_capacity(len);
+        self.input.by_ref().take(len as u64).read_to_end(&mut buf)?;
+        Ok(buf)
     }
 
     fn read_block_tpe(&mut self) -> Result<BlockType> {
@@ -161,7 +294,7 @@ impl<R: Read + Seek> Reader<R> {
         let version = self.read_string(128)?;
         // this size was reduced compared to what is documented in block_format.txt
         let date = self.read_string(119)?;
-        let file_type = self.read_u8()?;
+        let file_type = FileType::try_from(self.read_u8()?)?;
         let time_zero = self.read_u64()?;
 
         let header = Header {
@@ -211,10 +344,22 @@ impl<R: Read + Seek> Reader<R> {
         let max_handle = self.read_u64()?;
         let compressed_length = section_length - 3 * 8;
 
-        assert_eq!(
-            compressed_length, uncompressed_length,
-            "TODO: add decompression!"
-        );
+        let bytes = if compressed_length == uncompressed_length {
+            self.read_bytes(uncompressed_length as usize)?
+        } else {
+            todo!("add support for decompression")
+        };
+
+        println!("max_handle = {max_handle}");
+        let mut byte_ii = 0usize;
+        for ii in 0..max_handle {
+            let (value, inc) = get_variant_32(&bytes[byte_ii..])?;
+            byte_ii += inc;
+            if value == 0 {
+                println!("{ii} REAL");
+            } else {
+            }
+        }
 
         todo!();
 

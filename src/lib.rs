@@ -1,10 +1,5 @@
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use std::fs::read;
 use std::io::{Read, Seek, SeekFrom};
-
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
@@ -155,6 +150,19 @@ struct Header {
 }
 
 #[derive(Debug)]
+struct Signals {
+    // called "geometry" in gtkwave
+    lengths: Vec<u32>,
+    types: Vec<VarType>,
+}
+
+#[derive(Debug)]
+struct MetaData {
+    header: Header,
+    signals: Signals,
+}
+
+#[derive(Debug)]
 struct Handle(u32);
 #[derive(Debug)]
 struct EnumHandle(u32);
@@ -243,6 +251,7 @@ type Result<T> = std::result::Result<T, ReaderError>;
 struct HeaderReader<R: Read + Seek> {
     input: R,
     header: Option<Header>,
+    signals: Option<Signals>,
     buf: [u8; 128], // used for reading
 }
 
@@ -392,6 +401,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         HeaderReader {
             input,
             header: None,
+            signals: None,
             buf: [0u8; 128],
         }
     }
@@ -516,6 +526,9 @@ impl<R: Read + Seek> HeaderReader<R> {
         println!("max_handle = {max_handle}");
         let mut byte_ii = 0usize;
         let mut longest_signal_value_len = 32;
+        let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
+        let mut types: Vec<VarType> = Vec::with_capacity(max_handle as usize);
+
         for ii in 0..max_handle {
             let (value, inc) = get_variant_32(&bytes[byte_ii..])?;
             byte_ii += inc;
@@ -529,8 +542,11 @@ impl<R: Read + Seek> HeaderReader<R> {
                 }
                 (length, VarType::Wire)
             };
-            println!("{ii} {length} {tpe:?}")
+            println!("{ii} {length} {tpe:?}");
+            lengths.push(length);
+            types.push(tpe);
         }
+        self.signals = Some(Signals { lengths, types });
 
         Ok(())
     }
@@ -590,6 +606,39 @@ impl<R: Read + Seek> HeaderReader<R> {
         }
         Ok(())
     }
+
+    fn into_input_and_meta_data(mut self) -> Result<(R, MetaData)> {
+        self.input.seek(SeekFrom::Start(0))?;
+        let meta = MetaData {
+            header: self.header.unwrap(),
+            signals: self.signals.unwrap(),
+        };
+        Ok((self.input, meta))
+    }
+}
+
+struct DataReader<R: Read + Seek> {
+    input: R,
+    header: Header,
+    signals: Signals,
+}
+
+impl<R: Read + Seek> DataReader<R> {
+    fn new(input: R, meta: MetaData) -> Self {
+        DataReader {
+            input,
+            header: meta.header,
+            signals: meta.signals,
+        }
+    }
+    fn into_input(mut self) -> Result<R> {
+        self.input.seek(SeekFrom::Start(0))?;
+        Ok(self.input)
+    }
+
+    fn read(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 // TODO: get actual data
@@ -603,6 +652,13 @@ mod tests {
     fn simple_fst() {
         let f =
             std::fs::File::open("fsts/VerilatorBasicTests_Anon.fst").expect("failed to open file!");
-        HeaderReader::new(f).read().expect("It should work!");
+        // read the header
+        let mut headerReader = HeaderReader::new(f);
+        headerReader.read().expect("It should work!");
+        // read the actual data
+        let (input, meta) = headerReader.into_input_and_meta_data().unwrap();
+        DataReader::new(input, meta)
+            .read()
+            .expect("It should work!");
     }
 }

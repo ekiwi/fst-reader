@@ -157,9 +157,18 @@ struct Signals {
 }
 
 #[derive(Debug)]
+struct DataSectionInfo {
+    file_offset: u64, // points to section length
+    start_time: u64,
+    end_time: u64,
+    kind: DataSectionKind,
+}
+
+#[derive(Debug)]
 struct MetaData {
     header: Header,
     signals: Signals,
+    data_sections: Vec<DataSectionInfo>,
 }
 
 #[derive(Debug)]
@@ -252,6 +261,7 @@ struct HeaderReader<R: Read + Seek> {
     input: FstReader<R>,
     header: Option<Header>,
     signals: Option<Signals>,
+    data_sections: Vec<DataSectionInfo>,
 }
 
 struct HierarchyReader<R: Read> {
@@ -259,22 +269,39 @@ struct HierarchyReader<R: Read> {
 }
 
 #[inline]
-fn get_variant_32(bytes: &[u8]) -> Result<(u32, usize)> {
-    // find end byte (with bit 7 cleared)
-    let len = match bytes.iter().position(|b| (b & 0x80) == 0) {
-        None => {
-            return Err(ReaderError {
-                kind: ReaderErrorKind::ParseVariant(),
-            })
-        }
-        Some(end_index) => end_index + 1,
-    };
-    // read bits, 7 at a time
+fn read_variant_32(input: &mut impl Read) -> Result<u32> {
+    let mut byte = [0u8; 1];
     let mut res = 0u32;
-    for bb in bytes.iter().take(len).rev() {
-        res = (res << 7) | ((*bb as u32) & 0x7f)
+    for ii in 0..5 {
+        // 32bit / 7bit = ~4.6
+        input.read_exact(&mut byte)?;
+        let value = (byte[0] as u32) & 0x7f;
+        res |= value << (7 * ii);
+        if (byte[0] & 0x80) == 0 {
+            return Ok(res);
+        }
     }
-    Ok((res, len))
+    Err(ReaderError {
+        kind: ReaderErrorKind::ParseVariant(),
+    })
+}
+
+#[inline]
+fn read_variant_64(input: &mut impl Read) -> Result<u64> {
+    let mut byte = [0u8; 1];
+    let mut res = 0u64;
+    for ii in 0..10 {
+        // 64bit / 7bit = ~9.1
+        input.read_exact(&mut byte)?;
+        let value = (byte[0] as u64) & 0x7f;
+        res |= value << (7 * ii);
+        if (byte[0] & 0x80) == 0 {
+            return Ok(res);
+        }
+    }
+    Err(ReaderError {
+        kind: ReaderErrorKind::ParseVariant(),
+    })
 }
 
 const HIERARCHY_NAME_MAX_SIZE: usize = 512;
@@ -295,18 +322,7 @@ impl<R: Read> FstReader<R> {
 
     #[inline]
     fn read_variant_32(&mut self) -> Result<u32> {
-        let mut res = 0u32;
-        for ii in 0..8 {
-            let byte = self.read_u8()?;
-            let value = (byte as u32) & 0x7f;
-            res |= value << (7 * ii);
-            if (byte & 0x80) == 0 {
-                return Ok(res);
-            }
-        }
-        Err(ReaderError {
-            kind: ReaderErrorKind::ParseVariant(),
-        })
+        read_variant_32(&mut self.input)
     }
 
     fn read_c_str(&mut self, max_len: usize) -> Result<String> {
@@ -447,6 +463,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             input: FstReader::new(input),
             header: None,
             signals: None,
+            data_sections: Vec::default(),
         }
     }
 
@@ -494,15 +511,21 @@ impl<R: Read + Seek> HeaderReader<R> {
         Ok(())
     }
 
-    fn read_data(&mut self) -> Result<()> {
+    fn read_data(&mut self, tpe: &BlockType) -> Result<()> {
+        let file_offset = self.input.input.stream_position()?;
         // this is the data section
         let section_length = self.input.read_u64()?;
-        let bt = self.input.read_u64()?;
+        let start_time = self.input.read_u64()?;
         let end_time = self.input.read_u64()?;
-        if self.header_incomplete() {
-            todo!("Fixup missing header with info from data section!")
-        }
         self.skip(section_length, 3 * 8)?;
+        let kind = DataSectionKind::from_block_type(tpe).unwrap();
+        let info = DataSectionInfo {
+            file_offset,
+            start_time,
+            end_time,
+            kind,
+        };
+        self.data_sections.push(info);
         Ok(())
     }
 
@@ -532,14 +555,13 @@ impl<R: Read + Seek> HeaderReader<R> {
         };
 
         println!("max_handle = {max_handle}");
-        let mut byte_ii = 0usize;
         let mut longest_signal_value_len = 32;
         let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
         let mut types: Vec<VarType> = Vec::with_capacity(max_handle as usize);
+        let mut byte_reader: &[u8] = &bytes;
 
         for ii in 0..max_handle {
-            let (value, inc) = get_variant_32(&bytes[byte_ii..])?;
-            byte_ii += inc;
+            let value = read_variant_32(&mut byte_reader)?;
             let (length, tpe) = if value == 0 {
                 (8, VarType::Real)
             } else {
@@ -600,9 +622,9 @@ impl<R: Read + Seek> HeaderReader<R> {
             println!("{block_tpe:?}");
             match block_tpe {
                 BlockType::Header => self.read_header()?,
-                BlockType::VcData => self.read_data()?,
-                BlockType::VcDataDynamicAlias => self.read_data()?,
-                BlockType::VcDataDynamicAlias2 => self.read_data()?,
+                BlockType::VcData => self.read_data(&block_tpe)?,
+                BlockType::VcDataDynamicAlias => self.read_data(&block_tpe)?,
+                BlockType::VcDataDynamicAlias2 => self.read_data(&block_tpe)?,
                 BlockType::Blackout => todo!("blackout"),
                 BlockType::Geometry => self.read_geometry()?,
                 BlockType::Hierarchy => self.read_hierarchy(HierarchyCompression::ZLib)?,
@@ -620,6 +642,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         let meta = MetaData {
             header: self.header.unwrap(),
             signals: self.signals.unwrap(),
+            data_sections: self.data_sections,
         };
         Ok((self.input.input, meta))
     }
@@ -627,8 +650,7 @@ impl<R: Read + Seek> HeaderReader<R> {
 
 struct DataReader<R: Read + Seek> {
     input: FstReader<R>,
-    header: Header,
-    signals: Signals,
+    meta: MetaData,
 }
 
 #[derive(Debug)]
@@ -638,55 +660,81 @@ enum DataSectionKind {
     DynamicAlias2,
 }
 
+impl DataSectionKind {
+    fn from_block_type(tpe: &BlockType) -> Option<Self> {
+        match tpe {
+            BlockType::VcData => Some(DataSectionKind::Standard),
+            BlockType::VcDataDynamicAlias => Some(DataSectionKind::DynamicAlias),
+            BlockType::VcDataDynamicAlias2 => Some(DataSectionKind::DynamicAlias2),
+            _ => None,
+        }
+    }
+}
+
 impl<R: Read + Seek> DataReader<R> {
     fn new(input: R, meta: MetaData) -> Self {
         DataReader {
             input: FstReader::new(input),
-            header: meta.header,
-            signals: meta.signals,
+            meta,
         }
     }
 
-    fn skip(&mut self, section_length: u64, already_read: i64) -> Result<u64> {
-        Ok(self
+    fn read_time_block(&mut self, section_start: u64, section_length: u64) -> Result<Vec<u64>> {
+        // the time block meta data is in the last 24 bytes at the end of the section
+        self.input
             .input
-            .input
-            .seek(SeekFrom::Current((section_length as i64) - already_read))?)
-    }
+            .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
+        let uncompressed_length = self.input.read_u64()?;
+        let compressed_length = self.input.read_u64()?;
+        let number_of_items = self.input.read_u64()?;
+        assert!(compressed_length <= section_length);
 
-    fn find_data_section(&mut self) -> Result<Option<(DataSectionKind, u64)>> {
-        loop {
-            let block_tpe = match self.input.read_block_tpe() {
-                Err(_) => return Ok(None),
-                Ok(tpe) => tpe,
-            };
-            let section_length = self.input.read_u64()?;
-            match block_tpe {
-                BlockType::VcData => return Ok(Some((DataSectionKind::Standard, section_length))),
-                BlockType::VcDataDynamicAlias => {
-                    return Ok(Some((DataSectionKind::DynamicAlias, section_length)))
-                }
-                BlockType::VcDataDynamicAlias2 => {
-                    return Ok(Some((DataSectionKind::DynamicAlias2, section_length)))
-                }
-                _ => self.skip(section_length, 8)?,
-            };
+        // now that we know how long the block actually is, we can go back to it
+        self.input
+            .input
+            .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
+        let bytes = if compressed_length == uncompressed_length {
+            self.input.read_bytes(uncompressed_length as usize)?
+        } else {
+            todo!("add support for decompression")
+        };
+        let mut byte_reader: &[u8] = &bytes;
+        let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
+        let mut time_val: u64 = 0; // running time counter
+
+        for ii in 0..number_of_items {
+            let value = read_variant_64(&mut byte_reader)?;
+            time_val += value;
+            time_table.push(time_val);
         }
+
+        Ok(time_table)
     }
 
     fn read(&mut self) -> Result<()> {
-        while let Some((kind, section_length)) = self.find_data_section()? {
-            println!("DATA");
-            // skip for now
-            self.skip(section_length, 8)?;
+        for section in self.meta.data_sections.iter() {
+            // skip to section
+            self.input
+                .input
+                .seek(SeekFrom::Start(section.file_offset))?;
+            let section_length = self.input.read_u64()?;
+
+            // verify meta-data
+            let start_time = self.input.read_u64()?;
+            let end_time = self.input.read_u64()?;
+            assert_eq!(start_time, section.start_time);
+            assert_eq!(end_time, section.end_time);
+
+            // 66 is for the potential fastlz overhead
+            let mem_required_for_traversal = self.input.read_u64()? + 66;
+            let time_table = self.read_time_block(section.file_offset, section_length)?;
+
+            todo!("DATA")
         }
 
         Ok(())
     }
 }
-
-// TODO: get actual data
-// look at fstReaderIterBlocks2 and fstReaderGetFacProcessMask
 
 #[cfg(test)]
 mod tests {

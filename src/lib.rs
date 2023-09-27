@@ -454,14 +454,15 @@ impl<R: Read + Seek> Reader<R> {
         Ok(())
     }
 
-    fn read_bv_data_dynamic_alias_2(&mut self) -> Result<()> {
-        // this section only seems to matter if the header is incomplete
+    fn read_data(&mut self) -> Result<()> {
+        // this is the data section
         let section_length = self.read_u64()?;
         let bt = self.read_u64()?;
         let end_time = self.read_u64()?;
-        // TODO: skip rest
+        if self.header_incomplete() {
+            todo!("Fixup missing header with info from data section!")
+        }
         self.skip(section_length, 3 * 8)?;
-
         Ok(())
     }
 
@@ -554,9 +555,9 @@ impl<R: Read + Seek> Reader<R> {
             println!("{block_tpe:?}");
             match block_tpe {
                 BlockType::Header => self.read_header()?,
-                BlockType::VcData => self.read_bv_data_dynamic_alias_2()?,
-                BlockType::VcDataDynamicAlias => self.read_bv_data_dynamic_alias_2()?,
-                BlockType::VcDataDynamicAlias2 => self.read_bv_data_dynamic_alias_2()?,
+                BlockType::VcData => self.read_data()?,
+                BlockType::VcDataDynamicAlias => self.read_data()?,
+                BlockType::VcDataDynamicAlias2 => self.read_data()?,
                 BlockType::Blackout => todo!("blackout"),
                 BlockType::Geometry => self.read_geometry()?,
                 BlockType::Hierarchy => self.read_hierarchy(HierarchyCompression::ZLib)?,
@@ -569,6 +570,9 @@ impl<R: Read + Seek> Reader<R> {
         Ok(())
     }
 }
+
+// TODO: get actual data
+// look at fstReaderIterBlocks2 and fstReaderGetFacProcessMask
 
 #[cfg(test)]
 mod tests {

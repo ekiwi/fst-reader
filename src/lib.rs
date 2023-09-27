@@ -156,7 +156,7 @@ struct Signals {
     types: Vec<VarType>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DataSectionInfo {
     file_offset: u64, // points to section length
     start_time: u64,
@@ -213,7 +213,8 @@ enum ReaderErrorKind {
     StringParse(std::str::Utf8Error),
     StringParse2(std::string::FromUtf8Error),
     ParseVariant(),
-    Decompress(lz4_flex::block::DecompressError),
+    DecompressLz4(lz4_flex::block::DecompressError),
+    DecompressZLib(miniz_oxide::inflate::DecompressError),
 }
 #[derive(Debug)]
 struct ReaderError {
@@ -250,7 +251,14 @@ impl From<std::string::FromUtf8Error> for ReaderError {
 
 impl From<lz4_flex::block::DecompressError> for ReaderError {
     fn from(value: lz4_flex::block::DecompressError) -> Self {
-        let kind = ReaderErrorKind::Decompress(value);
+        let kind = ReaderErrorKind::DecompressLz4(value);
+        ReaderError { kind }
+    }
+}
+
+impl From<miniz_oxide::inflate::DecompressError> for ReaderError {
+    fn from(value: miniz_oxide::inflate::DecompressError) -> Self {
+        let kind = ReaderErrorKind::DecompressZLib(value);
         ReaderError { kind }
     }
 }
@@ -325,6 +333,11 @@ impl<R: Read> FstReader<R> {
         read_variant_32(&mut self.input)
     }
 
+    #[inline]
+    fn read_variant_64(&mut self) -> Result<u64> {
+        read_variant_64(&mut self.input)
+    }
+
     fn read_c_str(&mut self, max_len: usize) -> Result<String> {
         let mut bytes: Vec<u8> = Vec::with_capacity(32);
         loop {
@@ -369,6 +382,22 @@ impl<R: Read> FstReader<R> {
         let mut buf: Vec<u8> = Vec::with_capacity(len);
         self.input.by_ref().take(len as u64).read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    fn read_compressed_bytes(
+        &mut self,
+        uncompressed_length: u64,
+        compressed_length: u64,
+    ) -> Result<Vec<u8>> {
+        let bytes = self.read_bytes(compressed_length as usize)?;
+        if uncompressed_length == compressed_length {
+            Ok(bytes)
+        } else {
+            Ok(miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+                &bytes,
+                uncompressed_length as usize,
+            )?)
+        }
     }
 
     fn read_block_tpe(&mut self) -> Result<BlockType> {
@@ -554,11 +583,9 @@ impl<R: Read + Seek> HeaderReader<R> {
         let max_handle = self.input.read_u64()?;
         let compressed_length = section_length - 3 * 8;
 
-        let bytes = if compressed_length == uncompressed_length {
-            self.input.read_bytes(uncompressed_length as usize)?
-        } else {
-            todo!("add support for decompression")
-        };
+        let bytes = self
+            .input
+            .read_compressed_bytes(uncompressed_length, compressed_length)?;
 
         println!("max_handle = {max_handle}");
         let mut longest_signal_value_len = 32;
@@ -659,7 +686,7 @@ struct DataReader<R: Read + Seek> {
     meta: MetaData,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum DataSectionKind {
     Standard,
     DynamicAlias,
@@ -697,11 +724,9 @@ impl<R: Read + Seek> DataReader<R> {
         // now that we know how long the block actually is, we can go back to it
         self.input
             .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
-        let bytes = if compressed_length == uncompressed_length {
-            self.input.read_bytes(uncompressed_length as usize)?
-        } else {
-            todo!("add support for decompression")
-        };
+        let bytes = self
+            .input
+            .read_compressed_bytes(uncompressed_length, compressed_length)?;
         let mut byte_reader: &[u8] = &bytes;
         let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
         let mut time_val: u64 = 0; // running time counter
@@ -715,8 +740,23 @@ impl<R: Read + Seek> DataReader<R> {
         Ok(time_table)
     }
 
+    fn read_frame(&mut self, section_start: u64, section_length: u64) -> Result<()> {
+        // we skip the section header (section_length, start_time, end_time, ???)
+        self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
+        let uncompressed_length = self.input.read_variant_64()?;
+        let compressed_length = self.input.read_variant_64()?;
+        let max_handle = self.input.read_variant_64()?;
+        assert!(compressed_length <= section_length);
+        let bytes = self
+            .input
+            .read_compressed_bytes(uncompressed_length, compressed_length)?;
+
+        Ok(())
+    }
+
     fn read(&mut self) -> Result<()> {
-        for section in self.meta.data_sections.iter() {
+        let sections = self.meta.data_sections.clone();
+        for section in sections {
             // skip to section
             self.input.seek(SeekFrom::Start(section.file_offset))?;
             let section_length = self.input.read_u64()?;
@@ -728,8 +768,10 @@ impl<R: Read + Seek> DataReader<R> {
             assert_eq!(end_time, section.end_time);
 
             // 66 is for the potential fastlz overhead
-            let mem_required_for_traversal = self.input.read_u64()? + 66;
+            // let mem_required_for_traversal = self.input.read_u64()? + 66;
+
             let time_table = self.read_time_block(section.file_offset, section_length)?;
+            self.read_frame(section.file_offset, section_length)?;
 
             todo!("DATA")
         }

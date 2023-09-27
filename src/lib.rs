@@ -1,6 +1,6 @@
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::fs::read;
 use std::io::{Read, Seek, SeekFrom};
-use std::str::Utf8Error;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
@@ -66,7 +66,7 @@ enum ScopeType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, PartialEq)]
 enum VarType {
     // VCD
     Event = 0,
@@ -115,18 +115,6 @@ enum VarDirection {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
-enum HierarchyType {
-    Scope = 0,
-    UpScope = 1,
-    Var = 2,
-    AttributeBegin = 3,
-    AttributeEnd = 4,
-    TreeBegin = 5,
-    TreeEnd = 6,
-}
-
-#[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
 enum AttributeType {
     Misc = 0,
     Array = 1,
@@ -150,6 +138,7 @@ enum MiscType {
 
 const DOUBLE_ENDIAN_TEST: f64 = 2.7182818284590452354;
 
+#[derive(Debug)]
 struct Header {
     start_time: u64,
     end_time: u64,
@@ -166,11 +155,48 @@ struct Header {
 }
 
 #[derive(Debug)]
+struct Handle(u32);
+#[derive(Debug)]
+struct EnumHandle(u32);
+
+#[derive(Debug)]
+enum HierarchyEntry {
+    Scope {
+        tpe: ScopeType,
+        name: String,
+        component: String,
+    },
+    UpScope,
+    Var {
+        tpe: VarType,
+        direction: VarDirection,
+        name: String,
+        length: u32,
+        handle: Handle,
+        is_alias: bool,
+    },
+    AttributeBegin {
+        name: String,
+        // TODO
+    },
+    AttributeEnd,
+}
+
+#[derive(Debug)]
+enum HierarchyCompression {
+    ZLib,
+    Lz4,
+    Lz4Duo,
+}
+
+#[derive(Debug)]
 enum ReaderErrorKind {
     IO(std::io::Error),
     FromPrimitive(),
-    StringParse(Utf8Error),
+    StringParse(std::str::Utf8Error),
+    StringParse2(std::string::FromUtf8Error),
     ParseVariant(),
+    Decompress(lz4_flex::block::DecompressError),
 }
 #[derive(Debug)]
 struct ReaderError {
@@ -191,9 +217,23 @@ impl<Enum: TryFromPrimitive> From<TryFromPrimitiveError<Enum>> for ReaderError {
     }
 }
 
-impl From<Utf8Error> for ReaderError {
-    fn from(value: Utf8Error) -> Self {
+impl From<std::str::Utf8Error> for ReaderError {
+    fn from(value: std::str::Utf8Error) -> Self {
         let kind = ReaderErrorKind::StringParse(value);
+        ReaderError { kind }
+    }
+}
+
+impl From<std::string::FromUtf8Error> for ReaderError {
+    fn from(value: std::string::FromUtf8Error) -> Self {
+        let kind = ReaderErrorKind::StringParse2(value);
+        ReaderError { kind }
+    }
+}
+
+impl From<lz4_flex::block::DecompressError> for ReaderError {
+    fn from(value: lz4_flex::block::DecompressError) -> Self {
+        let kind = ReaderErrorKind::Decompress(value);
         ReaderError { kind }
     }
 }
@@ -223,6 +263,105 @@ fn get_variant_32(bytes: &[u8]) -> Result<(u32, usize)> {
         res = (res << 7) | ((*bb as u32) & 0x7f)
     }
     Ok((res, len))
+}
+
+fn read_variant_32(input: &mut impl Read) -> Result<u32> {
+    let mut res = 0u32;
+    for ii in 0..8 {
+        let byte = read_u8(input)?;
+        let value = (byte as u32) & 0x7f;
+        res |= value << (7 * ii);
+        if (byte & 0x80) == 0 {
+            return Ok(res);
+        }
+    }
+    Err(ReaderError {
+        kind: ReaderErrorKind::ParseVariant(),
+    })
+}
+
+#[inline]
+fn read_u8(input: &mut impl Read) -> Result<u8> {
+    let mut buf = [0u8; 1];
+    input.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+fn read_c_str(input: &mut impl Read, max_len: usize) -> Result<String> {
+    let mut bytes: Vec<u8> = Vec::with_capacity(32);
+    loop {
+        let byte = read_u8(input)?;
+        if byte == 0 {
+            break;
+        } else {
+            bytes.push(byte);
+        }
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
+const HIERARCHY_NAME_MAX_SIZE: usize = 512;
+const HIERARCHY_ATTRIBUTE_MAX_SIZE: usize = 65536 + 4096;
+
+fn read_hierarchy_entry(hierarchy: &mut impl Read) -> Result<HierarchyEntry> {
+    let entry_tpe = read_u8(hierarchy)?;
+    let entry = match entry_tpe {
+        254 => {
+            // VcdScope (ScopeType)
+            let tpe = ScopeType::try_from_primitive(read_u8(hierarchy)?)?;
+            let name = read_c_str(hierarchy, HIERARCHY_NAME_MAX_SIZE)?;
+            let component = read_c_str(hierarchy, HIERARCHY_NAME_MAX_SIZE)?;
+            HierarchyEntry::Scope {
+                tpe,
+                name,
+                component,
+            }
+        }
+        0..=29 => {
+            // VcdEvent ... SvShortReal (VariableType)
+            let tpe = VarType::try_from_primitive(entry_tpe)?;
+            let direction = VarDirection::try_from_primitive(read_u8(hierarchy)?)?;
+            let name = read_c_str(hierarchy, HIERARCHY_NAME_MAX_SIZE)?;
+            let raw_length = read_variant_32(hierarchy)?;
+            let length = if tpe == VarType::Port {
+                // remove delimiting spaces and adjust signal size
+                (raw_length - 2) / 3
+            } else {
+                raw_length
+            };
+            let alias = read_variant_32(hierarchy)?;
+            let (is_alias, handle) = if alias == 0 {
+                (false, Handle(0)) // TODO: create unique handle by counting!
+            } else {
+                (true, Handle(alias))
+            };
+            HierarchyEntry::Var {
+                tpe,
+                direction,
+                name,
+                length,
+                handle,
+                is_alias,
+            }
+        }
+        255 => {
+            // VcdUpScope (ScopeType)
+            HierarchyEntry::UpScope
+        }
+        252 => {
+            // GenAttributeBegin (ScopeType)
+            todo!("Deal with Attribute Begin entry!")
+        }
+        253 => {
+            // GenAttributeEnd (ScopeType)
+            HierarchyEntry::AttributeEnd
+        }
+
+        other => todo!("Deal with hierarchy entry of type: {other}"),
+    };
+
+    println!("{entry:?}");
+    Ok(entry)
 }
 
 impl<R: Read + Seek> Reader<R> {
@@ -352,16 +491,56 @@ impl<R: Read + Seek> Reader<R> {
 
         println!("max_handle = {max_handle}");
         let mut byte_ii = 0usize;
+        let mut longest_signal_value_len = 32;
         for ii in 0..max_handle {
             let (value, inc) = get_variant_32(&bytes[byte_ii..])?;
             byte_ii += inc;
-            if value == 0 {
-                println!("{ii} REAL");
+            let (length, tpe) = if value == 0 {
+                (8, VarType::Real)
             } else {
-            }
+                let length = if value != 0xFFFFFFFFu32 { value } else { 0 };
+                if length > longest_signal_value_len {
+                    // TODO: is this code ever run?
+                    longest_signal_value_len = length;
+                }
+                (length, VarType::Wire)
+            };
+            println!("{ii} {length} {tpe:?}")
         }
 
-        todo!();
+        Ok(())
+    }
+
+    fn read_hierarchy_bytes(&mut self, compression: HierarchyCompression) -> Result<Vec<u8>> {
+        // Note: the GTKWave implementation skips decoding the hierarchy block initially
+        // it also first re-creates a history file and then read from it.
+        // Here we only recreate things in memory.
+        // This function is similar to fstReaderRecreateHierFile
+
+        let section_length = self.read_u64()? as usize;
+        let uncompressed_length = self.read_u64()? as usize;
+        let compressed_length = section_length - 2 * 8;
+
+        let bytes = match compression {
+            HierarchyCompression::ZLib => todo!("ZLib compression is currently not supported!"),
+            HierarchyCompression::Lz4 => {
+                let compressed = self.read_bytes(compressed_length)?;
+                let uncompressed = lz4_flex::decompress(&compressed, uncompressed_length as usize)?;
+                uncompressed
+            }
+            HierarchyCompression::Lz4Duo => todo!("Implement LZ4 Duo!"),
+        };
+        assert_eq!(bytes.len(), uncompressed_length);
+        Ok(bytes)
+    }
+
+    fn read_hierarchy(&mut self, compression: HierarchyCompression) -> Result<()> {
+        // similar to fstReaderIterateHier
+        let bytes = self.read_hierarchy_bytes(compression)?;
+        let mut hierarchy = bytes.as_slice();
+        while !hierarchy.is_empty() {
+            read_hierarchy_entry(&mut hierarchy)?;
+        }
 
         Ok(())
     }
@@ -378,13 +557,13 @@ impl<R: Read + Seek> Reader<R> {
                 BlockType::VcData => self.read_bv_data_dynamic_alias_2()?,
                 BlockType::VcDataDynamicAlias => self.read_bv_data_dynamic_alias_2()?,
                 BlockType::VcDataDynamicAlias2 => self.read_bv_data_dynamic_alias_2()?,
-                BlockType::Blackout => {}
+                BlockType::Blackout => todo!("blackout"),
                 BlockType::Geometry => self.read_geometry()?,
-                BlockType::Hierarchy => {}
-                BlockType::HierarchyLZ4 => {}
-                BlockType::HierarchyLZ4Duo => {}
-                BlockType::GZipWrapper => {}
-                BlockType::Skip => {}
+                BlockType::Hierarchy => self.read_hierarchy(HierarchyCompression::ZLib)?,
+                BlockType::HierarchyLZ4 => self.read_hierarchy(HierarchyCompression::Lz4)?,
+                BlockType::HierarchyLZ4Duo => self.read_hierarchy(HierarchyCompression::Lz4Duo)?,
+                BlockType::GZipWrapper => todo!(),
+                BlockType::Skip => todo!(),
             };
         }
         Ok(())

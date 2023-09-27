@@ -376,6 +376,13 @@ impl<R: Read> FstReader<R> {
     }
 }
 
+impl<R: Read + Seek> FstReader<R> {
+    #[inline]
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.input.seek(pos)
+    }
+}
+
 impl<R: Read> HierarchyReader<R> {
     fn new(input: R) -> Self {
         HierarchyReader {
@@ -532,7 +539,6 @@ impl<R: Read + Seek> HeaderReader<R> {
     fn skip(&mut self, section_length: u64, already_read: i64) -> Result<u64> {
         Ok(self
             .input
-            .input
             .seek(SeekFrom::Current((section_length as i64) - already_read))?)
     }
 
@@ -638,7 +644,7 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn into_input_and_meta_data(mut self) -> Result<(R, MetaData)> {
-        self.input.input.seek(SeekFrom::Start(0))?;
+        self.input.seek(SeekFrom::Start(0))?;
         let meta = MetaData {
             header: self.header.unwrap(),
             signals: self.signals.unwrap(),
@@ -682,7 +688,6 @@ impl<R: Read + Seek> DataReader<R> {
     fn read_time_block(&mut self, section_start: u64, section_length: u64) -> Result<Vec<u64>> {
         // the time block meta data is in the last 24 bytes at the end of the section
         self.input
-            .input
             .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
         let uncompressed_length = self.input.read_u64()?;
         let compressed_length = self.input.read_u64()?;
@@ -691,7 +696,6 @@ impl<R: Read + Seek> DataReader<R> {
 
         // now that we know how long the block actually is, we can go back to it
         self.input
-            .input
             .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
         let bytes = if compressed_length == uncompressed_length {
             self.input.read_bytes(uncompressed_length as usize)?
@@ -702,7 +706,7 @@ impl<R: Read + Seek> DataReader<R> {
         let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
         let mut time_val: u64 = 0; // running time counter
 
-        for ii in 0..number_of_items {
+        for _ in 0..number_of_items {
             let value = read_variant_64(&mut byte_reader)?;
             time_val += value;
             time_table.push(time_val);
@@ -714,9 +718,7 @@ impl<R: Read + Seek> DataReader<R> {
     fn read(&mut self) -> Result<()> {
         for section in self.meta.data_sections.iter() {
             // skip to section
-            self.input
-                .input
-                .seek(SeekFrom::Start(section.file_offset))?;
+            self.input.seek(SeekFrom::Start(section.file_offset))?;
             let section_length = self.input.read_u64()?;
 
             // verify meta-data

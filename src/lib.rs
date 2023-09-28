@@ -280,11 +280,11 @@ struct HierarchyReader<R: Read> {
 }
 
 #[inline]
-fn read_variant_32(input: &mut impl Read) -> Result<u32> {
+fn read_variant_u32(input: &mut impl Read) -> Result<u32> {
     let mut byte = [0u8; 1];
     let mut res = 0u32;
+    // 32bit / 7bit = ~4.6
     for ii in 0..5 {
-        // 32bit / 7bit = ~4.6
         input.read_exact(&mut byte)?;
         let value = (byte[0] as u32) & 0x7f;
         res |= value << (7 * ii);
@@ -298,7 +298,31 @@ fn read_variant_32(input: &mut impl Read) -> Result<u32> {
 }
 
 #[inline]
-fn read_variant_64(input: &mut impl Read) -> Result<u64> {
+fn read_variant_i64(input: &mut impl Read) -> Result<i64> {
+    let mut byte = [0u8; 1];
+    let mut res = 0i64;
+    // 64bit / 7bit = ~9.1
+    for ii in 0..10 {
+        input.read_exact(&mut byte)?;
+        let value = (byte[0] & 0x7f) as i64;
+        let shift_by = 7 * ii;
+        res |= value << shift_by;
+        if (byte[0] & 0x80) == 0 {
+            // sign extend
+            let sign_bit_set = (byte[0] & 0x40) != 0;
+            if shift_by < (8 * 8) && sign_bit_set {
+                res |= -(1i64 << (shift_by + 7))
+            }
+            return Ok(res);
+        }
+    }
+    Err(ReaderError {
+        kind: ReaderErrorKind::ParseVariant(),
+    })
+}
+
+#[inline]
+fn read_variant_u64(input: &mut impl Read) -> Result<u64> {
     let mut byte = [0u8; 1];
     let mut res = 0u64;
     for ii in 0..10 {
@@ -336,6 +360,14 @@ fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> Result<f64> {
         FloatingPointEndian::Little => Ok(f64::from_le_bytes(buf)),
         FloatingPointEndian::Big => Ok(f64::from_be_bytes(buf)),
     }
+}
+
+#[inline]
+fn peek_u8(input: &mut (impl Read + Seek)) -> Result<u8> {
+    let mut buf = [0u8; 1];
+    input.read_exact(&mut buf)?;
+    input.seek(SeekFrom::Current(-1))?;
+    Ok(buf[0])
 }
 
 const HIERARCHY_NAME_MAX_SIZE: usize = 512;
@@ -383,12 +415,12 @@ impl<R: Read> FstReader<R> {
 
     #[inline]
     fn read_variant_32(&mut self) -> Result<u32> {
-        read_variant_32(&mut self.input)
+        read_variant_u32(&mut self.input)
     }
 
     #[inline]
     fn read_variant_64(&mut self) -> Result<u64> {
-        read_variant_64(&mut self.input)
+        read_variant_u64(&mut self.input)
     }
 
     fn read_c_str(&mut self, max_len: usize) -> Result<String> {
@@ -649,7 +681,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         let mut byte_reader: &[u8] = &bytes;
 
         for ii in 0..max_handle {
-            let value = read_variant_32(&mut byte_reader)?;
+            let value = read_variant_u32(&mut byte_reader)?;
             let (length, tpe) = if value == 0 {
                 (8, VarType::Real)
             } else {
@@ -742,11 +774,28 @@ struct DataReader<R: Read + Seek> {
     meta: MetaData,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum DataSectionKind {
     Standard,
     DynamicAlias,
     DynamicAlias2,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ValueChangePackType {
+    Lz4,
+    FastLz,
+    Zlib,
+}
+
+impl ValueChangePackType {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            b'4' => ValueChangePackType::Lz4,
+            b'F' => ValueChangePackType::FastLz,
+            _ => ValueChangePackType::Zlib,
+        }
+    }
 }
 
 impl DataSectionKind {
@@ -768,7 +817,11 @@ impl<R: Read + Seek> DataReader<R> {
         }
     }
 
-    fn read_time_block(&mut self, section_start: u64, section_length: u64) -> Result<Vec<u64>> {
+    fn read_time_block(
+        &mut self,
+        section_start: u64,
+        section_length: u64,
+    ) -> Result<(u64, Vec<u64>)> {
         // the time block meta data is in the last 24 bytes at the end of the section
         self.input
             .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
@@ -788,12 +841,13 @@ impl<R: Read + Seek> DataReader<R> {
         let mut time_val: u64 = 0; // running time counter
 
         for _ in 0..number_of_items {
-            let value = read_variant_64(&mut byte_reader)?;
+            let value = read_variant_u64(&mut byte_reader)?;
             time_val += value;
             time_table.push(time_val);
         }
 
-        Ok(time_table)
+        let time_section_length = compressed_length + 3 * 8;
+        Ok((time_section_length, time_table))
     }
 
     fn read_frame(&mut self, section_start: u64, section_length: u64) -> Result<()> {
@@ -828,6 +882,82 @@ impl<R: Read + Seek> DataReader<R> {
         Ok(())
     }
 
+    fn skip_frame(&mut self, section_start: u64) -> Result<()> {
+        // we skip the section header (section_length, start_time, end_time, ???)
+        self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
+        let _uncompressed_length = self.input.read_variant_64()?;
+        let compressed_length = self.input.read_variant_64()?;
+        self.input
+            .seek(SeekFrom::Current(compressed_length as i64))?;
+        Ok(())
+    }
+
+    fn read_value_change_alias2(&self, mut chain_bytes: &[u8], max_handle: u64) -> Result<()> {
+        let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+        let mut chain_table_lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
+        let mut value = 0i64;
+        let mut prev_alias = 0u32;
+        while !chain_bytes.is_empty() {
+            let kind = chain_bytes[0];
+            if (kind & 1) == 1 {
+                let shval = read_variant_i64(&mut chain_bytes)?;
+                if shval > 0 {
+                    value += shval;
+                    match chain_table.last() {
+                        None => {} // this is the first iteration
+                        Some(last_value) => {
+                            let len = (value - last_value) as u32;
+                            chain_table_lengths.push(len);
+                        }
+                    };
+                    chain_table.push(value);
+                } else if shval < 0 {
+                    chain_table.push(0);
+                    prev_alias = shval as u32;
+                    chain_table_lengths.push(prev_alias);
+                } else {
+                    chain_table.push(0);
+                    chain_table_lengths.push(prev_alias);
+                }
+            } else {
+                let zeros = read_variant_u32(&mut chain_bytes)? / 2;
+                for _ in 0..zeros {
+                    chain_table.push(0);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_value_changes(
+        &mut self,
+        section_kind: DataSectionKind,
+        section_start: u64,
+        section_length: u64,
+        time_section_length: u64,
+    ) -> Result<()> {
+        let max_handle = self.input.read_variant_64()?;
+        let start = self.input.input.stream_position()?;
+        let packtpe = ValueChangePackType::from_u8(self.input.read_u8()?);
+
+        // the chain length is right in front of the time section
+        let chain_len_offset = section_start + section_length - time_section_length - 8;
+        self.input.seek(SeekFrom::Start(chain_len_offset))?;
+        let chain_compressed_length = self.input.read_u64()?;
+
+        // the chain starts _chain_length_ bytes before the chain length
+        let chain_start = chain_len_offset - chain_compressed_length;
+        self.input.seek(SeekFrom::Start(chain_start))?;
+        let chain_bytes = self.input.read_bytes(chain_compressed_length as usize)?;
+
+        if section_kind == DataSectionKind::DynamicAlias2 {
+            self.read_value_change_alias2(&chain_bytes, max_handle)?;
+        }
+
+        Ok(())
+    }
+
     fn read(&mut self) -> Result<()> {
         let sections = self.meta.data_sections.clone();
         for (sec_num, section) in sections.iter().enumerate() {
@@ -845,12 +975,22 @@ impl<R: Read + Seek> DataReader<R> {
             // 66 is for the potential fastlz overhead
             // let mem_required_for_traversal = self.input.read_u64()? + 66;
 
-            let time_table = self.read_time_block(section.file_offset, section_length)?;
+            let (time_section_length, time_table) =
+                self.read_time_block(section.file_offset, section_length)?;
 
             if is_first_section {
                 // TODO: what about (beg_tim != time_table[0]) || (blocks_skipped) ?
                 self.read_frame(section.file_offset, section_length)?;
+            } else {
+                self.skip_frame(section.file_offset)?;
             }
+
+            self.read_value_changes(
+                section.kind,
+                section.file_offset,
+                section_length,
+                time_section_length,
+            )?;
 
             todo!("DATA")
         }

@@ -280,16 +280,16 @@ struct HierarchyReader<R: Read> {
 }
 
 #[inline]
-fn read_variant_u32(input: &mut impl Read) -> Result<u32> {
+fn read_variant_u32(input: &mut impl Read) -> Result<(u32, u32)> {
     let mut byte = [0u8; 1];
     let mut res = 0u32;
     // 32bit / 7bit = ~4.6
-    for ii in 0..5 {
+    for ii in 0..5u32 {
         input.read_exact(&mut byte)?;
         let value = (byte[0] as u32) & 0x7f;
         res |= value << (7 * ii);
         if (byte[0] & 0x80) == 0 {
-            return Ok(res);
+            return Ok((res, ii + 1));
         }
     }
     Err(ReaderError {
@@ -414,7 +414,7 @@ impl<R: Read> FstReader<R> {
     }
 
     #[inline]
-    fn read_variant_32(&mut self) -> Result<u32> {
+    fn read_variant_32(&mut self) -> Result<(u32, u32)> {
         read_variant_u32(&mut self.input)
     }
 
@@ -536,14 +536,14 @@ impl<R: Read> HierarchyReader<R> {
                 let tpe = VarType::try_from_primitive(entry_tpe)?;
                 let direction = VarDirection::try_from_primitive(self.input.read_u8()?)?;
                 let name = self.input.read_c_str(HIERARCHY_NAME_MAX_SIZE)?;
-                let raw_length = self.input.read_variant_32()?;
+                let (raw_length, _) = self.input.read_variant_32()?;
                 let length = if tpe == VarType::Port {
                     // remove delimiting spaces and adjust signal size
                     (raw_length - 2) / 3
                 } else {
                     raw_length
                 };
-                let alias = self.input.read_variant_32()?;
+                let (alias, _) = self.input.read_variant_32()?;
                 let (is_alias, handle) = if alias == 0 {
                     self.handle_count += 1;
                     (false, Handle(self.handle_count))
@@ -681,7 +681,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         let mut byte_reader: &[u8] = &bytes;
 
         for ii in 0..max_handle {
-            let value = read_variant_u32(&mut byte_reader)?;
+            let (value, _) = read_variant_u32(&mut byte_reader)?;
             let (length, tpe) = if value == 0 {
                 (8, VarType::Real)
             } else {
@@ -809,6 +809,28 @@ impl DataSectionKind {
     }
 }
 
+const RCV_STR: [u8; 8] = [b'x', b'z', b'h', b'u', b'w', b'l', b'-', b'?'];
+fn one_bit_signal_value_to_char(vli: u32) -> u8 {
+    if (vli & 1) == 0 {
+        (((vli >> 1) & 1) as u8) | b'0'
+    } else {
+        RCV_STR[((vli >> 1) & 7) as usize]
+    }
+}
+
+fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<(usize)> {
+    let mut slice = bytes[offset..];
+    let (vli,) = read_variant_u32(&mut slice)?;
+    let shift_count = 2u32 << (vli & 1);
+    Ok((vli >> shift_count) as usize)
+}
+
+fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<(usize)> {
+    let mut slice = bytes[offset..];
+    let (vli,) = read_variant_u32(&mut slice)?;
+    Ok((vli >> 1) as usize)
+}
+
 impl<R: Read + Seek> DataReader<R> {
     fn new(input: R, meta: MetaData) -> Self {
         DataReader {
@@ -893,7 +915,6 @@ impl<R: Read + Seek> DataReader<R> {
     }
 
     fn read_value_change_alias2(
-        &self,
         mut chain_bytes: &[u8],
         max_handle: u64,
     ) -> Result<(Vec<i64>, Vec<u32>, usize)> {
@@ -927,7 +948,8 @@ impl<R: Read + Seek> DataReader<R> {
                     chain_table_lengths[idx] = prev_alias;
                 }
             } else {
-                let zeros = read_variant_u32(&mut chain_bytes)? >> 1;
+                let (value, _) = read_variant_u32(&mut chain_bytes)?;
+                let zeros = value >> 1;
                 for _ in 0..zeros {
                     chain_table.push(0);
                 }
@@ -970,7 +992,7 @@ impl<R: Read + Seek> DataReader<R> {
 
         let (mut chain_table, mut chain_table_lengths, prev_idx) =
             if section_kind == DataSectionKind::DynamicAlias2 {
-                self.read_value_change_alias2(&chain_bytes, max_handle)?
+                Self::read_value_change_alias2(&chain_bytes, max_handle)?
             } else {
                 todo!("support data section kind {section_kind:?}")
             };
@@ -989,6 +1011,7 @@ impl<R: Read + Seek> DataReader<R> {
         section_start: u64,
         section_length: u64,
         time_section_length: u64,
+        time_table: &[u64],
     ) -> Result<()> {
         let max_handle = self.input.read_variant_64()?;
         let start = self.input.input.stream_position()?;
@@ -998,6 +1021,75 @@ impl<R: Read + Seek> DataReader<R> {
         let chain_len_offset = section_start + section_length - time_section_length - 8;
         let (chain_table, chain_table_lengths) =
             self.read_change_table(chain_len_offset, section_kind, max_handle, start)?;
+
+        // read data and create a bunch of pointers
+        let mut mu: Vec<u8> = Vec::new();
+        let mut head_pointer: Vec<u32> = Vec::with_capacity(max_handle as usize);
+        let mut length_remaining: Vec<u32> = Vec::with_capacity(max_handle as usize);
+        let mut scatter_pointer = vec![0u32; max_handle as usize];
+        let mut tc_head = vec![0u32; std::cmp::max(1, time_table.len())];
+
+        for (ii, (entry, length)) in chain_table
+            .iter()
+            .zip(chain_table_lengths.iter())
+            .take(max_handle as usize)
+            .enumerate()
+        {
+            if *entry != 0 {
+                // TODO: add support for skipping indices
+                self.input
+                    .seek(SeekFrom::Start((section_start as i64 + entry) as u64))?;
+                let (value, skiplen) = self.input.read_variant_32()?;
+                println!("{value}");
+                let vli = if value != 0 {
+                    todo!()
+                } else {
+                    let dest_length = (length - skiplen);
+                    let mut bytes = self.input.read_bytes(dest_length as usize)?;
+                    head_pointer.push(mu.len() as u32);
+                    length_remaining.push(dest_length);
+                    mu.append(&mut bytes);
+                };
+                let tdelta = if self.meta.signals.lengths[ii] == 1 {
+                    read_one_bit_signal_time_delta(&mu, head_pointer[ii])?
+                } else {
+                    read_multi_bit_signal_time_delta(&mu, head_pointer[ii])?
+                };
+                scatter_pointer[ii] = tc_head[tdelta];
+                tc_head[tdelta] = ii as u32 + 1;
+            }
+        }
+
+        for (time_id, time) in time_table.iter().enumerate() {
+            // handles cannot be zero
+            while tc_head[time_id] != 0 {
+                let signal_id = (tc_head[time_id] - 1) as usize;
+                let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
+                let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
+                match self.meta.signals.lengths[signal_id] {
+                    1 => {
+                        let value = one_bit_signal_value_to_char(vli);
+                        println!("{signal_id}@{time_id} = ${value}");
+
+                        // update pointers
+                        head_pointer[signal_id] += skiplen;
+                        length_remaining[signal_id] -= skiplen;
+                        tc_head[time_id] = scatter_pointer[signal_id];
+                        scatter_pointer[signal_id] = 0;
+
+                        if length_remaining[signal_id] > 0 {
+                            let tdelta =
+                                read_one_bit_signal_time_delta(&mu, head_pointer[signal_id])?;
+                            scatter_pointer[signal_id] = tc_head[time_id + tdelta];
+                            tc_head[time_id + tdelta] = (signal_id + 1) as u32;
+                        }
+                    }
+                    other => todo!("{other}"),
+                }
+
+                println!("{vli}")
+            }
+        }
 
         Ok(())
     }
@@ -1034,6 +1126,7 @@ impl<R: Read + Seek> DataReader<R> {
                 section.file_offset,
                 section_length,
                 time_section_length,
+                &time_table,
             )?;
 
             todo!("DATA")

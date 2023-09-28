@@ -61,7 +61,7 @@ enum ScopeType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive, PartialEq)]
+#[derive(Debug, TryFromPrimitive, PartialEq, Copy, Clone)]
 enum VarType {
     // VCD
     Event = 0,
@@ -169,6 +169,7 @@ struct MetaData {
     header: Header,
     signals: Signals,
     data_sections: Vec<DataSectionInfo>,
+    float_endian: FloatingPointEndian,
 }
 
 #[derive(Debug)]
@@ -270,10 +271,12 @@ struct HeaderReader<R: Read + Seek> {
     header: Option<Header>,
     signals: Option<Signals>,
     data_sections: Vec<DataSectionInfo>,
+    float_endian: FloatingPointEndian,
 }
 
 struct HierarchyReader<R: Read> {
     input: FstReader<R>,
+    handle_count: u32,
 }
 
 #[inline]
@@ -312,6 +315,29 @@ fn read_variant_64(input: &mut impl Read) -> Result<u64> {
     })
 }
 
+#[inline]
+fn read_fixed_length_str(input: &mut impl Read, len: usize) -> Result<String> {
+    let bytes = read_bytes(input, len)?;
+    Ok(String::from_utf8(bytes)?)
+}
+
+#[inline]
+fn read_bytes(input: &mut impl Read, len: usize) -> Result<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::with_capacity(len);
+    input.take(len as u64).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+#[inline]
+fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> Result<f64> {
+    let mut buf = [0u8; 8];
+    input.read_exact(&mut buf)?;
+    match endian {
+        FloatingPointEndian::Little => Ok(f64::from_le_bytes(buf)),
+        FloatingPointEndian::Big => Ok(f64::from_be_bytes(buf)),
+    }
+}
+
 const HIERARCHY_NAME_MAX_SIZE: usize = 512;
 const HIERARCHY_ATTRIBUTE_MAX_SIZE: usize = 65536 + 4096;
 
@@ -320,11 +346,38 @@ struct FstReader<R: Read> {
     buf: [u8; 128], // used for reading
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum FloatingPointEndian {
+    Little,
+    Big,
+}
+
 impl<R: Read> FstReader<R> {
     fn new(input: R) -> Self {
         FstReader {
             input,
             buf: [0u8; 128],
+        }
+    }
+
+    #[inline]
+    fn read_f64(&mut self, endian: FloatingPointEndian) -> Result<f64> {
+        read_f64(&mut self.input, endian)
+    }
+
+    fn determine_f64_endian(&mut self, needle: f64) -> Result<FloatingPointEndian> {
+        let bytes = self.read_bytes(8)?;
+        let mut byte_reader: &[u8] = &bytes;
+        let le = read_f64(&mut byte_reader, FloatingPointEndian::Little)?;
+        if le == needle {
+            return Ok(FloatingPointEndian::Little);
+        }
+        byte_reader = &bytes;
+        let be = read_f64(&mut byte_reader, FloatingPointEndian::Big)?;
+        if be == needle {
+            Ok(FloatingPointEndian::Big)
+        } else {
+            todo!("should not get here")
         }
     }
 
@@ -356,11 +409,6 @@ impl<R: Read> FstReader<R> {
         Ok(u64::from_be_bytes(self.buf[..8].try_into().unwrap()))
     }
 
-    fn read_f64(&mut self) -> Result<f64> {
-        self.input.read_exact(&mut self.buf[..8])?;
-        Ok(f64::from_le_bytes(self.buf[..8].try_into().unwrap()))
-    }
-
     fn read_u8(&mut self) -> Result<u8> {
         self.input.read_exact(&mut self.buf[..1])?;
         Ok(self.buf[0])
@@ -371,17 +419,21 @@ impl<R: Read> FstReader<R> {
     }
 
     #[inline] // inline to specialize on length
-    fn read_string(&mut self, len: usize) -> Result<String> {
+    fn read_c_str_fixed_length(&mut self, len: usize) -> Result<String> {
         assert!(len <= 128);
         self.input.read_exact(&mut self.buf[..len])?;
         let zero_index = self.buf.iter().position(|b| *b == 0u8).unwrap_or(len - 1);
         Ok((std::str::from_utf8(&self.buf[..(zero_index + 1)])?).to_string())
     }
 
+    #[inline]
+    fn read_fixed_length_str(&mut self, len: usize) -> Result<String> {
+        read_fixed_length_str(&mut self.input, len)
+    }
+
+    #[inline]
     fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
-        let mut buf: Vec<u8> = Vec::with_capacity(len);
-        self.input.by_ref().take(len as u64).read_to_end(&mut buf)?;
-        Ok(buf)
+        read_bytes(&mut self.input, len)
     }
 
     fn read_compressed_bytes(
@@ -416,6 +468,7 @@ impl<R: Read> HierarchyReader<R> {
     fn new(input: R) -> Self {
         HierarchyReader {
             input: FstReader::new(input),
+            handle_count: 0,
         }
     }
 
@@ -460,7 +513,8 @@ impl<R: Read> HierarchyReader<R> {
                 };
                 let alias = self.input.read_variant_32()?;
                 let (is_alias, handle) = if alias == 0 {
-                    (false, Handle(0)) // TODO: create unique handle by counting!
+                    self.handle_count += 1;
+                    (false, Handle(self.handle_count))
                 } else {
                     (true, Handle(alias))
                 };
@@ -500,6 +554,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             header: None,
             signals: None,
             data_sections: Vec::default(),
+            float_endian: FloatingPointEndian::Little,
         }
     }
 
@@ -515,17 +570,17 @@ impl<R: Read + Seek> HeaderReader<R> {
         assert_eq!(section_length, 329);
         let start_time = self.input.read_u64()?;
         let end_time = self.input.read_u64()?;
-        let endian_test = self.input.read_f64()?;
-        assert_eq!(endian_test, DOUBLE_ENDIAN_TEST);
+        let float_endian = self.input.determine_f64_endian(DOUBLE_ENDIAN_TEST)?;
+        self.float_endian = float_endian;
         let memory_used_by_writer = self.input.read_u64()?;
         let scope_count = self.input.read_u64()?;
         let var_count = self.input.read_u64()?;
         let max_var_id_code = self.input.read_u64()?;
         let vc_section_count = self.input.read_u64()?;
         let timescale_exponent = self.input.read_i8()?;
-        let version = self.input.read_string(128)?;
+        let version = self.input.read_c_str_fixed_length(128)?;
         // this size was reduced compared to what is documented in block_format.txt
-        let date = self.input.read_string(119)?;
+        let date = self.input.read_c_str_fixed_length(119)?;
         let file_type = FileType::try_from(self.input.read_u8()?)?;
         let time_zero = self.input.read_u64()?;
 
@@ -676,6 +731,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             header: self.header.unwrap(),
             signals: self.signals.unwrap(),
             data_sections: self.data_sections,
+            float_endian: self.float_endian,
         };
         Ok((self.input.input, meta))
     }
@@ -751,12 +807,30 @@ impl<R: Read + Seek> DataReader<R> {
             .input
             .read_compressed_bytes(uncompressed_length, compressed_length)?;
 
+        let mut byte_reader: &[u8] = &bytes;
+        for idx in 0..(max_handle as usize) {
+            // we do not support a "process_mask" for now, will read all signals
+            match self.meta.signals.lengths[idx] {
+                0 => {} // ignore since variable-length records have no initial value
+                len => {
+                    let tpe = self.meta.signals.types[idx];
+                    if tpe != VarType::Real {
+                        let value = read_fixed_length_str(&mut byte_reader, len as usize)?;
+                        println!("Signal {idx}: {value}");
+                    } else {
+                        let value = read_f64(&mut byte_reader, self.meta.float_endian)?;
+                        todo!("add support for reals")
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
     fn read(&mut self) -> Result<()> {
         let sections = self.meta.data_sections.clone();
-        for section in sections {
+        for (sec_num, section) in sections.iter().enumerate() {
             // skip to section
             self.input.seek(SeekFrom::Start(section.file_offset))?;
             let section_length = self.input.read_u64()?;
@@ -766,12 +840,17 @@ impl<R: Read + Seek> DataReader<R> {
             let end_time = self.input.read_u64()?;
             assert_eq!(start_time, section.start_time);
             assert_eq!(end_time, section.end_time);
+            let is_first_section = sec_num == 0;
 
             // 66 is for the potential fastlz overhead
             // let mem_required_for_traversal = self.input.read_u64()? + 66;
 
             let time_table = self.read_time_block(section.file_offset, section_length)?;
-            self.read_frame(section.file_offset, section_length)?;
+
+            if is_first_section {
+                // TODO: what about (beg_tim != time_table[0]) || (blocks_skipped) ?
+                self.read_frame(section.file_offset, section_length)?;
+            }
 
             todo!("DATA")
         }

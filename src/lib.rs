@@ -818,16 +818,16 @@ fn one_bit_signal_value_to_char(vli: u32) -> u8 {
     }
 }
 
-fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<(usize)> {
-    let mut slice = bytes[offset..];
-    let (vli,) = read_variant_u32(&mut slice)?;
+fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> {
+    let mut slice = &bytes[(offset as usize)..];
+    let (vli, _) = read_variant_u32(&mut slice)?;
     let shift_count = 2u32 << (vli & 1);
     Ok((vli >> shift_count) as usize)
 }
 
-fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<(usize)> {
-    let mut slice = bytes[offset..];
-    let (vli,) = read_variant_u32(&mut slice)?;
+fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> {
+    let mut slice = &bytes[(offset as usize)..];
+    let (vli, _) = read_variant_u32(&mut slice)?;
     Ok((vli >> 1) as usize)
 }
 
@@ -1040,8 +1040,7 @@ impl<R: Read + Seek> DataReader<R> {
                 self.input
                     .seek(SeekFrom::Start((section_start as i64 + entry) as u64))?;
                 let (value, skiplen) = self.input.read_variant_32()?;
-                println!("{value}");
-                let vli = if value != 0 {
+                if value != 0 {
                     todo!()
                 } else {
                     let dest_length = (length - skiplen);
@@ -1084,7 +1083,20 @@ impl<R: Read + Seek> DataReader<R> {
                             tc_head[time_id + tdelta] = (signal_id + 1) as u32;
                         }
                     }
-                    other => todo!("{other}"),
+                    0 => {
+                        let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
+                        todo!("variable length signal support!")
+                    }
+                    other => {
+                        let len = self.meta.signals.lengths[signal_id];
+                        let tpe = self.meta.signals.types[signal_id];
+                        if tpe != VarType::Real {
+                            if (vli & 1) == 0 { // if bit0 is zero -> 2-state
+                            }
+                        } else {
+                            todo!("implement support for reals")
+                        }
+                    }
                 }
 
                 println!("{vli}")

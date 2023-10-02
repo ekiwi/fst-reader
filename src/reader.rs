@@ -271,7 +271,7 @@ impl From<miniz_oxide::inflate::DecompressError> for ReaderError {
 type Result<T> = std::result::Result<T, ReaderError>;
 
 struct HeaderReader<R: Read + Seek> {
-    input: FstReader<R>,
+    input: R,
     header: Option<Header>,
     signals: Option<Signals>,
     data_sections: Vec<DataSectionInfo>,
@@ -279,7 +279,7 @@ struct HeaderReader<R: Read + Seek> {
 }
 
 struct HierarchyReader<R: Read> {
-    input: FstReader<R>,
+    input: R,
     handle_count: u32,
 }
 
@@ -344,9 +344,72 @@ fn read_variant_u64(input: &mut impl Read) -> Result<u64> {
 }
 
 #[inline]
+fn read_u64(input: &mut impl Read) -> Result<u64> {
+    let mut buf = [0u8; 8];
+    input.read_exact(&mut buf)?;
+    Ok(u64::from_be_bytes(buf))
+}
+
+#[inline]
+fn read_u8(input: &mut impl Read) -> Result<u8> {
+    let mut buf = [0u8; 1];
+    input.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+#[inline]
+fn read_i8(input: &mut impl Read) -> Result<i8> {
+    let mut buf = [0u8; 1];
+    input.read_exact(&mut buf)?;
+    Ok(i8::from_be_bytes(buf))
+}
+
+#[inline]
 fn read_fixed_length_str(input: &mut impl Read, len: usize) -> Result<String> {
     let bytes = read_bytes(input, len)?;
     Ok(String::from_utf8(bytes)?)
+}
+
+fn read_c_str(input: &mut impl Read, max_len: usize) -> Result<String> {
+    let mut bytes: Vec<u8> = Vec::with_capacity(32);
+    for _ in 0..max_len {
+        let byte = read_u8(input)?;
+        if byte == 0 {
+            break;
+        } else {
+            bytes.push(byte);
+        }
+    }
+    Ok(String::from_utf8(bytes)?)
+}
+
+#[inline] // inline to specialize on length
+fn read_c_str_fixed_length(input: &mut impl Read, len: usize) -> Result<String> {
+    let mut bytes = read_bytes(input, len)?;
+    let zero_index = bytes.iter().position(|b| *b == 0u8).unwrap_or(len - 1);
+    let str_len = bytes.len() - zero_index;
+    bytes.truncate(str_len);
+    Ok(String::from_utf8(bytes)?)
+}
+
+fn read_compressed_bytes(
+    input: &mut impl Read,
+    uncompressed_length: u64,
+    compressed_length: u64,
+) -> Result<Vec<u8>> {
+    let bytes = read_bytes(input, compressed_length as usize)?;
+    if uncompressed_length == compressed_length {
+        Ok(bytes)
+    } else {
+        Ok(miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+            &bytes,
+            uncompressed_length as usize,
+        )?)
+    }
+}
+
+fn read_block_tpe(input: &mut impl Read) -> Result<BlockType> {
+    Ok(BlockType::try_from(read_u8(input)?)?)
 }
 
 #[inline]
@@ -366,21 +429,8 @@ fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> Result<f64> {
     }
 }
 
-#[inline]
-fn peek_u8(input: &mut (impl Read + Seek)) -> Result<u8> {
-    let mut buf = [0u8; 1];
-    input.read_exact(&mut buf)?;
-    input.seek(SeekFrom::Current(-1))?;
-    Ok(buf[0])
-}
-
 const HIERARCHY_NAME_MAX_SIZE: usize = 512;
 const HIERARCHY_ATTRIBUTE_MAX_SIZE: usize = 65536 + 4096;
-
-struct FstReader<R: Read> {
-    input: R,
-    buf: [u8; 128], // used for reading
-}
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum FloatingPointEndian {
@@ -388,122 +438,26 @@ enum FloatingPointEndian {
     Big,
 }
 
-impl<R: Read> FstReader<R> {
-    fn new(input: R) -> Self {
-        FstReader {
-            input,
-            buf: [0u8; 128],
-        }
+fn determine_f64_endian(input: &mut impl Read, needle: f64) -> Result<FloatingPointEndian> {
+    let bytes = read_bytes(input, 8)?;
+    let mut byte_reader: &[u8] = &bytes;
+    let le = read_f64(&mut byte_reader, FloatingPointEndian::Little)?;
+    if le == needle {
+        return Ok(FloatingPointEndian::Little);
     }
-
-    #[inline]
-    fn read_f64(&mut self, endian: FloatingPointEndian) -> Result<f64> {
-        read_f64(&mut self.input, endian)
-    }
-
-    fn determine_f64_endian(&mut self, needle: f64) -> Result<FloatingPointEndian> {
-        let bytes = self.read_bytes(8)?;
-        let mut byte_reader: &[u8] = &bytes;
-        let le = read_f64(&mut byte_reader, FloatingPointEndian::Little)?;
-        if le == needle {
-            return Ok(FloatingPointEndian::Little);
-        }
-        byte_reader = &bytes;
-        let be = read_f64(&mut byte_reader, FloatingPointEndian::Big)?;
-        if be == needle {
-            Ok(FloatingPointEndian::Big)
-        } else {
-            todo!("should not get here")
-        }
-    }
-
-    #[inline]
-    fn read_variant_32(&mut self) -> Result<(u32, u32)> {
-        read_variant_u32(&mut self.input)
-    }
-
-    #[inline]
-    fn read_variant_64(&mut self) -> Result<u64> {
-        read_variant_u64(&mut self.input)
-    }
-
-    fn read_c_str(&mut self, max_len: usize) -> Result<String> {
-        let mut bytes: Vec<u8> = Vec::with_capacity(32);
-        for _ in 0..max_len {
-            let byte = self.read_u8()?;
-            if byte == 0 {
-                break;
-            } else {
-                bytes.push(byte);
-            }
-        }
-        Ok(String::from_utf8(bytes)?)
-    }
-
-    fn read_u64(&mut self) -> Result<u64> {
-        self.input.read_exact(&mut self.buf[..8])?;
-        Ok(u64::from_be_bytes(self.buf[..8].try_into().unwrap()))
-    }
-
-    fn read_u8(&mut self) -> Result<u8> {
-        self.input.read_exact(&mut self.buf[..1])?;
-        Ok(self.buf[0])
-    }
-    fn read_i8(&mut self) -> Result<i8> {
-        self.input.read_exact(&mut self.buf[..1])?;
-        Ok(i8::from_be_bytes(self.buf[..1].try_into().unwrap()))
-    }
-
-    #[inline] // inline to specialize on length
-    fn read_c_str_fixed_length(&mut self, len: usize) -> Result<String> {
-        assert!(len <= 128);
-        self.input.read_exact(&mut self.buf[..len])?;
-        let zero_index = self.buf.iter().position(|b| *b == 0u8).unwrap_or(len - 1);
-        Ok((std::str::from_utf8(&self.buf[..(zero_index + 1)])?).to_string())
-    }
-
-    #[inline]
-    fn read_fixed_length_str(&mut self, len: usize) -> Result<String> {
-        read_fixed_length_str(&mut self.input, len)
-    }
-
-    #[inline]
-    fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
-        read_bytes(&mut self.input, len)
-    }
-
-    fn read_compressed_bytes(
-        &mut self,
-        uncompressed_length: u64,
-        compressed_length: u64,
-    ) -> Result<Vec<u8>> {
-        let bytes = self.read_bytes(compressed_length as usize)?;
-        if uncompressed_length == compressed_length {
-            Ok(bytes)
-        } else {
-            Ok(miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                &bytes,
-                uncompressed_length as usize,
-            )?)
-        }
-    }
-
-    fn read_block_tpe(&mut self) -> Result<BlockType> {
-        Ok(BlockType::try_from(self.read_u8()?)?)
-    }
-}
-
-impl<R: Read + Seek> FstReader<R> {
-    #[inline]
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.input.seek(pos)
+    byte_reader = &bytes;
+    let be = read_f64(&mut byte_reader, FloatingPointEndian::Big)?;
+    if be == needle {
+        Ok(FloatingPointEndian::Big)
+    } else {
+        todo!("should not get here")
     }
 }
 
 impl<R: Read> HierarchyReader<R> {
     fn new(input: R) -> Self {
         HierarchyReader {
-            input: FstReader::new(input),
+            input: input,
             handle_count: 0,
         }
     }
@@ -519,16 +473,16 @@ impl<R: Read> HierarchyReader<R> {
     }
 
     fn read_entry(&mut self) -> Result<Option<HierarchyEntry>> {
-        let entry_tpe = match self.input.read_u8() {
+        let entry_tpe = match read_u8(&mut self.input) {
             Ok(tpe) => tpe,
             Err(_) => return Ok(None),
         };
         let entry = match entry_tpe {
             254 => {
                 // VcdScope (ScopeType)
-                let tpe = ScopeType::try_from_primitive(self.input.read_u8()?)?;
-                let name = self.input.read_c_str(HIERARCHY_NAME_MAX_SIZE)?;
-                let component = self.input.read_c_str(HIERARCHY_NAME_MAX_SIZE)?;
+                let tpe = ScopeType::try_from_primitive(read_u8(&mut self.input)?)?;
+                let name = read_c_str(&mut self.input, HIERARCHY_NAME_MAX_SIZE)?;
+                let component = read_c_str(&mut self.input, HIERARCHY_NAME_MAX_SIZE)?;
                 HierarchyEntry::Scope {
                     tpe,
                     name,
@@ -538,16 +492,16 @@ impl<R: Read> HierarchyReader<R> {
             0..=29 => {
                 // VcdEvent ... SvShortReal (VariableType)
                 let tpe = VarType::try_from_primitive(entry_tpe)?;
-                let direction = VarDirection::try_from_primitive(self.input.read_u8()?)?;
-                let name = self.input.read_c_str(HIERARCHY_NAME_MAX_SIZE)?;
-                let (raw_length, _) = self.input.read_variant_32()?;
+                let direction = VarDirection::try_from_primitive(read_u8(&mut self.input)?)?;
+                let name = read_c_str(&mut self.input, HIERARCHY_NAME_MAX_SIZE)?;
+                let (raw_length, _) = read_variant_u32(&mut self.input)?;
                 let length = if tpe == VarType::Port {
                     // remove delimiting spaces and adjust signal size
                     (raw_length - 2) / 3
                 } else {
                     raw_length
                 };
-                let (alias, _) = self.input.read_variant_32()?;
+                let (alias, _) = read_variant_u32(&mut self.input)?;
                 let (is_alias, handle) = if alias == 0 {
                     self.handle_count += 1;
                     (false, Handle(self.handle_count))
@@ -586,7 +540,7 @@ impl<R: Read> HierarchyReader<R> {
 impl<R: Read + Seek> HeaderReader<R> {
     fn new(input: R) -> Self {
         HeaderReader {
-            input: FstReader::new(input),
+            input: input,
             header: None,
             signals: None,
             data_sections: Vec::default(),
@@ -602,23 +556,23 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn read_header(&mut self) -> Result<()> {
-        let section_length = self.input.read_u64()?;
+        let section_length = read_u64(&mut self.input)?;
         assert_eq!(section_length, 329);
-        let start_time = self.input.read_u64()?;
-        let end_time = self.input.read_u64()?;
-        let float_endian = self.input.determine_f64_endian(DOUBLE_ENDIAN_TEST)?;
+        let start_time = read_u64(&mut self.input)?;
+        let end_time = read_u64(&mut self.input)?;
+        let float_endian = determine_f64_endian(&mut self.input, DOUBLE_ENDIAN_TEST)?;
         self.float_endian = float_endian;
-        let memory_used_by_writer = self.input.read_u64()?;
-        let scope_count = self.input.read_u64()?;
-        let var_count = self.input.read_u64()?;
-        let max_var_id_code = self.input.read_u64()?;
-        let vc_section_count = self.input.read_u64()?;
-        let timescale_exponent = self.input.read_i8()?;
-        let version = self.input.read_c_str_fixed_length(128)?;
+        let memory_used_by_writer = read_u64(&mut self.input)?;
+        let scope_count = read_u64(&mut self.input)?;
+        let var_count = read_u64(&mut self.input)?;
+        let max_var_id_code = read_u64(&mut self.input)?;
+        let vc_section_count = read_u64(&mut self.input)?;
+        let timescale_exponent = read_i8(&mut self.input)?;
+        let version = read_c_str_fixed_length(&mut self.input, 128)?;
         // this size was reduced compared to what is documented in block_format.txt
-        let date = self.input.read_c_str_fixed_length(119)?;
-        let file_type = FileType::try_from(self.input.read_u8()?)?;
-        let time_zero = self.input.read_u64()?;
+        let date = read_c_str_fixed_length(&mut self.input, 119)?;
+        let file_type = FileType::try_from(read_u8(&mut self.input)?)?;
+        let time_zero = read_u64(&mut self.input)?;
 
         let header = Header {
             start_time,
@@ -639,11 +593,11 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn read_data(&mut self, tpe: &BlockType) -> Result<()> {
-        let file_offset = self.input.input.stream_position()?;
+        let file_offset = self.input.stream_position()?;
         // this is the data section
-        let section_length = self.input.read_u64()?;
-        let start_time = self.input.read_u64()?;
-        let end_time = self.input.read_u64()?;
+        let section_length = read_u64(&mut self.input)?;
+        let start_time = read_u64(&mut self.input)?;
+        let end_time = read_u64(&mut self.input)?;
         self.skip(section_length, 3 * 8)?;
         let kind = DataSectionKind::from_block_type(tpe).unwrap();
         let info = DataSectionInfo {
@@ -663,20 +617,18 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn read_geometry(&mut self) -> Result<()> {
-        let section_length = self.input.read_u64()?;
+        let section_length = read_u64(&mut self.input)?;
         // skip this section if the header is not complete
         if self.header_incomplete() {
             self.skip(section_length, 8)?;
             return Ok(());
         }
 
-        let uncompressed_length = self.input.read_u64()?;
-        let max_handle = self.input.read_u64()?;
+        let uncompressed_length = read_u64(&mut self.input)?;
+        let max_handle = read_u64(&mut self.input)?;
         let compressed_length = section_length - 3 * 8;
 
-        let bytes = self
-            .input
-            .read_compressed_bytes(uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
 
         println!("max_handle = {max_handle}");
         let mut longest_signal_value_len = 32;
@@ -711,14 +663,14 @@ impl<R: Read + Seek> HeaderReader<R> {
         // Here we only recreate things in memory.
         // This function is similar to fstReaderRecreateHierFile
 
-        let section_length = self.input.read_u64()? as usize;
-        let uncompressed_length = self.input.read_u64()? as usize;
+        let section_length = read_u64(&mut self.input)? as usize;
+        let uncompressed_length = read_u64(&mut self.input)? as usize;
         let compressed_length = section_length - 2 * 8;
 
         let bytes = match compression {
             HierarchyCompression::ZLib => todo!("ZLib compression is currently not supported!"),
             HierarchyCompression::Lz4 => {
-                let compressed = self.input.read_bytes(compressed_length)?;
+                let compressed = read_bytes(&mut self.input, compressed_length)?;
                 let uncompressed = lz4_flex::decompress(&compressed, uncompressed_length as usize)?;
                 uncompressed
             }
@@ -739,7 +691,7 @@ impl<R: Read + Seek> HeaderReader<R> {
 
     fn read(&mut self) -> Result<()> {
         loop {
-            let block_tpe = match self.input.read_block_tpe() {
+            let block_tpe = match read_block_tpe(&mut self.input) {
                 Err(_) => break,
                 Ok(tpe) => tpe,
             };
@@ -769,12 +721,12 @@ impl<R: Read + Seek> HeaderReader<R> {
             data_sections: self.data_sections,
             float_endian: self.float_endian,
         };
-        Ok((self.input.input, meta))
+        Ok((self.input, meta))
     }
 }
 
 struct DataReader<R: Read + Seek> {
-    input: FstReader<R>,
+    input: R,
     meta: MetaData,
 }
 
@@ -856,10 +808,7 @@ fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> 
 
 impl<R: Read + Seek> DataReader<R> {
     fn new(input: R, meta: MetaData) -> Self {
-        DataReader {
-            input: FstReader::new(input),
-            meta,
-        }
+        DataReader { input: input, meta }
     }
 
     fn read_time_block(
@@ -870,17 +819,15 @@ impl<R: Read + Seek> DataReader<R> {
         // the time block meta data is in the last 24 bytes at the end of the section
         self.input
             .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
-        let uncompressed_length = self.input.read_u64()?;
-        let compressed_length = self.input.read_u64()?;
-        let number_of_items = self.input.read_u64()?;
+        let uncompressed_length = read_u64(&mut self.input)?;
+        let compressed_length = read_u64(&mut self.input)?;
+        let number_of_items = read_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
 
         // now that we know how long the block actually is, we can go back to it
         self.input
             .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
-        let bytes = self
-            .input
-            .read_compressed_bytes(uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
         let mut byte_reader: &[u8] = &bytes;
         let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
         let mut time_val: u64 = 0; // running time counter
@@ -898,13 +845,11 @@ impl<R: Read + Seek> DataReader<R> {
     fn read_frame(&mut self, section_start: u64, section_length: u64) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let uncompressed_length = self.input.read_variant_64()?;
-        let compressed_length = self.input.read_variant_64()?;
-        let max_handle = self.input.read_variant_64()?;
+        let uncompressed_length = read_variant_u64(&mut self.input)?;
+        let compressed_length = read_variant_u64(&mut self.input)?;
+        let max_handle = read_variant_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
-        let bytes = self
-            .input
-            .read_compressed_bytes(uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
 
         let mut byte_reader: &[u8] = &bytes;
         for idx in 0..(max_handle as usize) {
@@ -930,8 +875,8 @@ impl<R: Read + Seek> DataReader<R> {
     fn skip_frame(&mut self, section_start: u64) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let _uncompressed_length = self.input.read_variant_64()?;
-        let compressed_length = self.input.read_variant_64()?;
+        let _uncompressed_length = read_variant_u64(&mut self.input)?;
+        let compressed_length = read_variant_u64(&mut self.input)?;
         self.input
             .seek(SeekFrom::Current(compressed_length as i64))?;
         Ok(())
@@ -1006,12 +951,12 @@ impl<R: Read + Seek> DataReader<R> {
         start: u64,
     ) -> Result<(Vec<i64>, Vec<u32>)> {
         self.input.seek(SeekFrom::Start(chain_len_offset))?;
-        let chain_compressed_length = self.input.read_u64()?;
+        let chain_compressed_length = read_u64(&mut self.input)?;
 
         // the chain starts _chain_length_ bytes before the chain length
         let chain_start = chain_len_offset - chain_compressed_length;
         self.input.seek(SeekFrom::Start(chain_start))?;
-        let chain_bytes = self.input.read_bytes(chain_compressed_length as usize)?;
+        let chain_bytes = read_bytes(&mut self.input, chain_compressed_length as usize)?;
 
         let (mut chain_table, mut chain_table_lengths, prev_idx) =
             if section_kind == DataSectionKind::DynamicAlias2 {
@@ -1036,9 +981,9 @@ impl<R: Read + Seek> DataReader<R> {
         time_section_length: u64,
         time_table: &[u64],
     ) -> Result<()> {
-        let max_handle = self.input.read_variant_64()?;
-        let vc_start = self.input.input.stream_position()?;
-        let packtpe = ValueChangePackType::from_u8(self.input.read_u8()?);
+        let max_handle = read_variant_u64(&mut self.input)?;
+        let vc_start = self.input.stream_position()?;
+        let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
@@ -1062,12 +1007,12 @@ impl<R: Read + Seek> DataReader<R> {
                 // TODO: add support for skipping indices
                 self.input
                     .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-                let (value, skiplen) = self.input.read_variant_32()?;
+                let (value, skiplen) = read_variant_u32(&mut self.input)?;
                 if value != 0 {
                     todo!()
                 } else {
                     let dest_length = length - skiplen;
-                    let mut bytes = self.input.read_bytes(dest_length as usize)?;
+                    let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
                     head_pointer.push(mu.len() as u32);
                     length_remaining.push(dest_length);
                     mu.append(&mut bytes);
@@ -1152,17 +1097,17 @@ impl<R: Read + Seek> DataReader<R> {
         for (sec_num, section) in sections.iter().enumerate() {
             // skip to section
             self.input.seek(SeekFrom::Start(section.file_offset))?;
-            let section_length = self.input.read_u64()?;
+            let section_length = read_u64(&mut self.input)?;
 
             // verify meta-data
-            let start_time = self.input.read_u64()?;
-            let end_time = self.input.read_u64()?;
+            let start_time = read_u64(&mut self.input)?;
+            let end_time = read_u64(&mut self.input)?;
             assert_eq!(start_time, section.start_time);
             assert_eq!(end_time, section.end_time);
             let is_first_section = sec_num == 0;
 
             // 66 is for the potential fastlz overhead
-            // let mem_required_for_traversal = self.input.read_u64()? + 66;
+            // let mem_required_for_traversal = read_u64(&mut self.input)? + 66;
 
             let (time_section_length, time_table) =
                 self.read_time_block(section.file_offset, section_length)?;
@@ -1196,10 +1141,10 @@ mod tests {
         let f =
             std::fs::File::open("fsts/VerilatorBasicTests_Anon.fst").expect("failed to open file!");
         // read the header
-        let mut headerReader = HeaderReader::new(f);
-        headerReader.read().expect("It should work!");
+        let mut header_reader = HeaderReader::new(f);
+        header_reader.read().expect("It should work!");
         // read the actual data
-        let (input, meta) = headerReader.into_input_and_meta_data().unwrap();
+        let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
         DataReader::new(input, meta)
             .read()
             .expect("It should work!");
@@ -1213,5 +1158,14 @@ mod tests {
         // a negative value from a real fst file (solution from gtkwave)
         let in0 = [0x7b];
         assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
+    }
+
+    #[test]
+    fn test_read_c_str_fixed_length() {
+        let input = [b'h', b'i', 0u8, b'x'];
+        assert_eq!(
+            read_c_str_fixed_length(&mut input.as_slice(), 4).unwrap(),
+            "hi"
+        )
     }
 }

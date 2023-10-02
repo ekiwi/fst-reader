@@ -230,7 +230,7 @@ impl From<std::io::Error> for ReaderError {
 }
 
 impl<Enum: TryFromPrimitive> From<TryFromPrimitiveError<Enum>> for ReaderError {
-    fn from(value: TryFromPrimitiveError<Enum>) -> Self {
+    fn from(_value: TryFromPrimitiveError<Enum>) -> Self {
         let kind = ReaderErrorKind::FromPrimitive();
         ReaderError { kind }
     }
@@ -425,7 +425,7 @@ impl<R: Read> FstReader<R> {
 
     fn read_c_str(&mut self, max_len: usize) -> Result<String> {
         let mut bytes: Vec<u8> = Vec::with_capacity(32);
-        loop {
+        for _ in 0..max_len {
             let byte = self.read_u8()?;
             if byte == 0 {
                 break;
@@ -517,7 +517,7 @@ impl<R: Read> HierarchyReader<R> {
     fn read_entry(&mut self) -> Result<Option<HierarchyEntry>> {
         let entry_tpe = match self.input.read_u8() {
             Ok(tpe) => tpe,
-            Err(e) => return Ok(None),
+            Err(_) => return Ok(None),
         };
         let entry = match entry_tpe {
             254 => {
@@ -810,12 +810,31 @@ impl DataSectionKind {
 }
 
 const RCV_STR: [u8; 8] = [b'x', b'z', b'h', b'u', b'w', b'l', b'-', b'?'];
+#[inline]
 fn one_bit_signal_value_to_char(vli: u32) -> u8 {
     if (vli & 1) == 0 {
         (((vli >> 1) & 1) as u8) | b'0'
     } else {
         RCV_STR[((vli >> 1) & 7) as usize]
     }
+}
+
+/// Decodes a digital (1/0) signal. This is indicated by bit0 in vli being cleared.
+#[inline]
+fn multi_bit_digital_signal_to_chars(bytes: &[u8], len: usize) -> Vec<u8> {
+    let mut chars = Vec::with_capacity(len);
+    for ii in 0..len {
+        let byte_id = ii / 8;
+        let bit_id = 7 - (ii & 7);
+        let bit = (bytes[byte_id] >> bit_id) & 1;
+        chars.push(bit | b'0');
+    }
+    chars
+}
+
+#[inline]
+fn int_div_ceil(a: usize, b: usize) -> usize {
+    (a + b - 1) / b
 }
 
 fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> {
@@ -894,7 +913,7 @@ impl<R: Read + Seek> DataReader<R> {
                         let value = read_fixed_length_str(&mut byte_reader, len as usize)?;
                         println!("Signal {idx}: {value}");
                     } else {
-                        let value = read_f64(&mut byte_reader, self.meta.float_endian)?;
+                        let _value = read_f64(&mut byte_reader, self.meta.float_endian)?;
                         todo!("add support for reals")
                     }
                 }
@@ -959,7 +978,7 @@ impl<R: Read + Seek> DataReader<R> {
         Ok((chain_table, chain_table_lengths, prev_idx))
     }
 
-    fn fixup_change_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
+    fn fixup_chain_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
         assert_eq!(chain_table.len(), chain_lengths.len());
         for ii in 0..chain_table.len() {
             let v32 = chain_lengths[ii] as i32;
@@ -975,7 +994,7 @@ impl<R: Read + Seek> DataReader<R> {
         }
     }
 
-    fn read_change_table(
+    fn read_chain_table(
         &mut self,
         chain_len_offset: u64,
         section_kind: DataSectionKind,
@@ -1000,7 +1019,7 @@ impl<R: Read + Seek> DataReader<R> {
         chain_table.push(last_table_entry);
         chain_table_lengths[prev_idx] = (last_table_entry - chain_table[prev_idx]) as u32;
 
-        Self::fixup_change_table(&mut chain_table, &mut chain_table_lengths);
+        Self::fixup_chain_table(&mut chain_table, &mut chain_table_lengths);
 
         Ok((chain_table, chain_table_lengths))
     }
@@ -1014,13 +1033,13 @@ impl<R: Read + Seek> DataReader<R> {
         time_table: &[u64],
     ) -> Result<()> {
         let max_handle = self.input.read_variant_64()?;
-        let start = self.input.input.stream_position()?;
+        let vc_start = self.input.input.stream_position()?;
         let packtpe = ValueChangePackType::from_u8(self.input.read_u8()?);
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
         let (chain_table, chain_table_lengths) =
-            self.read_change_table(chain_len_offset, section_kind, max_handle, start)?;
+            self.read_chain_table(chain_len_offset, section_kind, max_handle, vc_start)?;
 
         // read data and create a bunch of pointers
         let mut mu: Vec<u8> = Vec::new();
@@ -1038,12 +1057,12 @@ impl<R: Read + Seek> DataReader<R> {
             if *entry != 0 {
                 // TODO: add support for skipping indices
                 self.input
-                    .seek(SeekFrom::Start((section_start as i64 + entry) as u64))?;
+                    .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
                 let (value, skiplen) = self.input.read_variant_32()?;
                 if value != 0 {
                     todo!()
                 } else {
-                    let dest_length = (length - skiplen);
+                    let dest_length = length - skiplen;
                     let mut bytes = self.input.read_bytes(dest_length as usize)?;
                     head_pointer.push(mu.len() as u32);
                     length_remaining.push(dest_length);
@@ -1065,41 +1084,59 @@ impl<R: Read + Seek> DataReader<R> {
                 let signal_id = (tc_head[time_id] - 1) as usize;
                 let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
                 let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
-                match self.meta.signals.lengths[signal_id] {
+                let signal_len = self.meta.signals.lengths[signal_id];
+                let len = match signal_len {
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
-                        println!("{signal_id}@{time_id} = ${value}");
-
-                        // update pointers
-                        head_pointer[signal_id] += skiplen;
-                        length_remaining[signal_id] -= skiplen;
-                        tc_head[time_id] = scatter_pointer[signal_id];
-                        scatter_pointer[signal_id] = 0;
-
-                        if length_remaining[signal_id] > 0 {
-                            let tdelta =
-                                read_one_bit_signal_time_delta(&mu, head_pointer[signal_id])?;
-                            scatter_pointer[signal_id] = tc_head[time_id + tdelta];
-                            tc_head[time_id + tdelta] = (signal_id + 1) as u32;
-                        }
+                        println!(
+                            "{signal_id}@{time} = {}",
+                            String::from_utf8(vec![value]).unwrap()
+                        );
+                        0 // no additional bytes consumed
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
-                        todo!("variable length signal support!")
+                        todo!("variable length signal support! {len} {skiplen2}")
                     }
-                    other => {
-                        let len = self.meta.signals.lengths[signal_id];
+                    len => {
                         let tpe = self.meta.signals.types[signal_id];
+                        let signal_len = len as usize;
                         if tpe != VarType::Real {
-                            if (vli & 1) == 0 { // if bit0 is zero -> 2-state
-                            }
+                            let (value, len) = if (vli & 1) == 0 {
+                                // if bit0 is zero -> 2-state
+                                let read_len = int_div_ceil(signal_len, 8);
+                                let bytes = read_bytes(&mut mu_slice, read_len)?;
+                                (
+                                    multi_bit_digital_signal_to_chars(&bytes, signal_len),
+                                    read_len as u32,
+                                )
+                            } else {
+                                (read_bytes(&mut mu_slice, signal_len)?, len)
+                            };
+                            println!("{signal_id}@{time} = {}", String::from_utf8(value).unwrap());
+                            len
                         } else {
                             todo!("implement support for reals")
                         }
                     }
-                }
+                };
 
-                println!("{vli}")
+                // update pointers
+                let total_skiplen = skiplen + len;
+                head_pointer[signal_id] += total_skiplen;
+                length_remaining[signal_id] -= total_skiplen;
+                tc_head[time_id] = scatter_pointer[signal_id];
+                scatter_pointer[signal_id] = 0;
+
+                if length_remaining[signal_id] > 0 {
+                    let tdelta = if signal_len == 1 {
+                        read_one_bit_signal_time_delta(&mu, head_pointer[signal_id])?
+                    } else {
+                        read_multi_bit_signal_time_delta(&mu, head_pointer[signal_id])?
+                    };
+                    scatter_pointer[signal_id] = tc_head[time_id + tdelta];
+                    tc_head[time_id + tdelta] = (signal_id + 1) as u32;
+                }
             }
         }
 
@@ -1140,8 +1177,6 @@ impl<R: Read + Seek> DataReader<R> {
                 time_section_length,
                 &time_table,
             )?;
-
-            todo!("DATA")
         }
 
         Ok(())

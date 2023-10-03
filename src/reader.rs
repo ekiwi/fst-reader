@@ -49,7 +49,7 @@ impl FstFilter {
         FstFilter {
             start: 0,
             end: None,
-            include: None,
+            include: Some(signals),
         }
     }
 }
@@ -571,7 +571,7 @@ struct HeaderReader<R: Read + Seek> {
 impl<R: Read + Seek> HeaderReader<R> {
     fn new(input: R) -> Self {
         HeaderReader {
-            input: input,
+            input,
             header: None,
             signals: None,
             data_sections: Vec::default(),
@@ -752,8 +752,7 @@ fn read_hierarchy_bytes(
         HierarchyCompression::ZLib => todo!("ZLib compression is currently not supported!"),
         HierarchyCompression::Lz4 => {
             let compressed = read_bytes(input, compressed_length)?;
-            let uncompressed = lz4_flex::decompress(&compressed, uncompressed_length as usize)?;
-            uncompressed
+            lz4_flex::decompress(&compressed, uncompressed_length)?
         }
         HierarchyCompression::Lz4Duo => todo!("Implement LZ4 Duo!"),
     };

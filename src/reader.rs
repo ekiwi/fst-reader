@@ -4,6 +4,7 @@
 
 use bitvec::prelude::{BitVec, Msb0};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::fmt::Formatter;
 use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
 
@@ -13,26 +14,42 @@ pub struct FstReader<R: Read + Seek> {
     meta: MetaData,
 }
 
-pub struct SignalFilter {
+pub struct FstFilter {
     pub start: u64,
     pub end: Option<u64>,
-    pub include: Option<Vec<SignalHandle>>,
+    pub include: Option<Vec<FstSignalHandle>>,
 }
 
-impl SignalFilter {
-    fn all() -> Self {
-        SignalFilter {
+impl FstFilter {
+    pub fn all() -> Self {
+        FstFilter {
             start: 0,
             end: None,
             include: None,
         }
     }
 
-    fn new(start: u64, end: u64, signals: Vec<SignalHandle>) -> Self {
-        SignalFilter {
+    pub fn new(start: u64, end: u64, signals: Vec<FstSignalHandle>) -> Self {
+        FstFilter {
             start,
             end: Some(end),
             include: Some(signals),
+        }
+    }
+
+    pub fn filter_time(start: u64, end: u64) -> Self {
+        FstFilter {
+            start,
+            end: Some(end),
+            include: None,
+        }
+    }
+
+    pub fn filter_signals(signals: Vec<FstSignalHandle>) -> Self {
+        FstFilter {
+            start: 0,
+            end: None,
+            include: None,
         }
     }
 }
@@ -47,7 +64,7 @@ impl<R: Read + Seek> FstReader<R> {
     }
 
     /// Reads the hierarchy and calls callback for every item.
-    pub fn read_hierarchy(&mut self, mut callback: impl FnMut(HierarchyEntry)) -> Result<()> {
+    pub fn read_hierarchy(&mut self, mut callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
         self.input
             .seek(SeekFrom::Start(self.meta.hierarchy_offset))?;
         let bytes = read_hierarchy_bytes(&mut self.input, self.meta.hierarchy_compression)?;
@@ -62,8 +79,8 @@ impl<R: Read + Seek> FstReader<R> {
     /// Read signal values for a specific time interval.
     pub fn read_signals(
         &mut self,
-        filter: &SignalFilter,
-        mut callback: impl FnMut(u64, SignalHandle, &str),
+        filter: &FstFilter,
+        mut callback: impl FnMut(u64, FstSignalHandle, &str),
     ) -> Result<()> {
         // convert user filters
         let signal_count = self.meta.signals.types.len();
@@ -121,7 +138,7 @@ enum BlockType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
-pub enum ScopeType {
+pub enum FstScopeType {
     // VCD
     Module = 0,
     Task = 1,
@@ -156,7 +173,7 @@ pub enum ScopeType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq, Copy, Clone)]
-pub enum VarType {
+pub enum FstVarType {
     // VCD
     Event = 0,
     Integer = 1,
@@ -193,7 +210,7 @@ pub enum VarType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
-pub enum VarDirection {
+pub enum FstVarDirection {
     Implicit = 0,
     Input = 1,
     Output = 2,
@@ -247,7 +264,7 @@ struct Header {
 struct Signals {
     // called "geometry" in gtkwave
     lengths: Vec<u32>,
-    types: Vec<VarType>,
+    types: Vec<FstVarType>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,33 +286,39 @@ struct MetaData {
 }
 
 #[derive(Debug)]
-pub struct SignalHandle(NonZeroU32);
+pub struct FstSignalHandle(NonZeroU32);
 #[derive(Debug)]
 struct EnumHandle(u32);
 
-impl SignalHandle {
+impl FstSignalHandle {
     fn new(value: u32) -> Self {
-        SignalHandle(NonZeroU32::new(value).unwrap())
+        FstSignalHandle(NonZeroU32::new(value).unwrap())
     }
     fn from_index(index: usize) -> Self {
-        SignalHandle(NonZeroU32::new((index as u32) + 1).unwrap())
+        FstSignalHandle(NonZeroU32::new((index as u32) + 1).unwrap())
+    }
+}
+
+impl std::fmt::Display for FstSignalHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "H{}", self.0)
     }
 }
 
 #[derive(Debug)]
-pub enum HierarchyEntry {
+pub enum FstHierarchyEntry {
     Scope {
-        tpe: ScopeType,
+        tpe: FstScopeType,
         name: String,
         component: String,
     },
     UpScope,
     Var {
-        tpe: VarType,
-        direction: VarDirection,
+        tpe: FstVarType,
+        direction: FstVarDirection,
         name: String,
         length: u32,
-        handle: SignalHandle,
+        handle: FstSignalHandle,
         is_alias: bool,
     },
     AttributeBegin {
@@ -452,12 +475,6 @@ fn read_i8(input: &mut impl Read) -> Result<i8> {
     Ok(i8::from_be_bytes(buf))
 }
 
-#[inline]
-fn read_fixed_length_str(input: &mut impl Read, len: usize) -> Result<String> {
-    let bytes = read_bytes(input, len)?;
-    Ok(String::from_utf8(bytes)?)
-}
-
 fn read_c_str(input: &mut impl Read, max_len: usize) -> Result<String> {
     let mut bytes: Vec<u8> = Vec::with_capacity(32);
     for _ in 0..max_len {
@@ -475,7 +492,7 @@ fn read_c_str(input: &mut impl Read, max_len: usize) -> Result<String> {
 fn read_c_str_fixed_length(input: &mut impl Read, len: usize) -> Result<String> {
     let mut bytes = read_bytes(input, len)?;
     let zero_index = bytes.iter().position(|b| *b == 0u8).unwrap_or(len - 1);
-    let str_len = bytes.len() - zero_index;
+    let str_len = zero_index;
     bytes.truncate(str_len);
     Ok(String::from_utf8(bytes)?)
 }
@@ -648,20 +665,20 @@ impl<R: Read + Seek> HeaderReader<R> {
         // println!("max_handle = {max_handle}");
         let mut longest_signal_value_len = 32;
         let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
-        let mut types: Vec<VarType> = Vec::with_capacity(max_handle as usize);
+        let mut types: Vec<FstVarType> = Vec::with_capacity(max_handle as usize);
         let mut byte_reader: &[u8] = &bytes;
 
-        for ii in 0..max_handle {
+        for _ii in 0..max_handle {
             let (value, _) = read_variant_u32(&mut byte_reader)?;
             let (length, tpe) = if value == 0 {
-                (8, VarType::Real)
+                (8, FstVarType::Real)
             } else {
                 let length = if value != 0xFFFFFFFFu32 { value } else { 0 };
                 if length > longest_signal_value_len {
                     // TODO: is this code ever run?
                     longest_signal_value_len = length;
                 }
-                (length, VarType::Wire)
+                (length, FstVarType::Wire)
             };
             // println!("{ii} {length} {tpe:?}");
             lengths.push(length);
@@ -747,7 +764,7 @@ fn read_hierarchy_bytes(
 fn read_hierarchy_entry(
     input: &mut impl Read,
     handle_count: &mut u32,
-) -> Result<Option<HierarchyEntry>> {
+) -> Result<Option<FstHierarchyEntry>> {
     let entry_tpe = match read_u8(input) {
         Ok(tpe) => tpe,
         Err(_) => return Ok(None),
@@ -755,10 +772,10 @@ fn read_hierarchy_entry(
     let entry = match entry_tpe {
         254 => {
             // VcdScope (ScopeType)
-            let tpe = ScopeType::try_from_primitive(read_u8(input)?)?;
+            let tpe = FstScopeType::try_from_primitive(read_u8(input)?)?;
             let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
             let component = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
-            HierarchyEntry::Scope {
+            FstHierarchyEntry::Scope {
                 tpe,
                 name,
                 component,
@@ -766,11 +783,11 @@ fn read_hierarchy_entry(
         }
         0..=29 => {
             // VcdEvent ... SvShortReal (VariableType)
-            let tpe = VarType::try_from_primitive(entry_tpe)?;
-            let direction = VarDirection::try_from_primitive(read_u8(input)?)?;
+            let tpe = FstVarType::try_from_primitive(entry_tpe)?;
+            let direction = FstVarDirection::try_from_primitive(read_u8(input)?)?;
             let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
             let (raw_length, _) = read_variant_u32(input)?;
-            let length = if tpe == VarType::Port {
+            let length = if tpe == FstVarType::Port {
                 // remove delimiting spaces and adjust signal size
                 (raw_length - 2) / 3
             } else {
@@ -779,11 +796,11 @@ fn read_hierarchy_entry(
             let (alias, _) = read_variant_u32(input)?;
             let (is_alias, handle) = if alias == 0 {
                 *handle_count += 1;
-                (false, SignalHandle::new(*handle_count))
+                (false, FstSignalHandle::new(*handle_count))
             } else {
-                (true, SignalHandle::new(alias))
+                (true, FstSignalHandle::new(alias))
             };
-            HierarchyEntry::Var {
+            FstHierarchyEntry::Var {
                 tpe,
                 direction,
                 name,
@@ -794,7 +811,7 @@ fn read_hierarchy_entry(
         }
         255 => {
             // VcdUpScope (ScopeType)
-            HierarchyEntry::UpScope
+            FstHierarchyEntry::UpScope
         }
         252 => {
             // GenAttributeBegin (ScopeType)
@@ -802,7 +819,7 @@ fn read_hierarchy_entry(
         }
         253 => {
             // GenAttributeEnd (ScopeType)
-            HierarchyEntry::AttributeEnd
+            FstHierarchyEntry::AttributeEnd
         }
 
         other => todo!("Deal with hierarchy entry of type: {other}"),
@@ -819,7 +836,7 @@ struct DataFilter {
     signals: BitMask,
 }
 
-struct DataReader<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> {
+struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> {
     input: &'a mut R,
     meta: &'a MetaData,
     filter: &'a DataFilter,
@@ -902,7 +919,7 @@ fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> 
     Ok((vli >> 1) as usize)
 }
 
-impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F> {
+impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R, F> {
     fn read_time_block(
         &mut self,
         section_start: u64,
@@ -934,7 +951,12 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
         Ok((time_section_length, time_table))
     }
 
-    fn read_frame(&mut self, section_start: u64, section_length: u64) -> Result<()> {
+    fn read_frame(
+        &mut self,
+        section_start: u64,
+        section_length: u64,
+        start_time: u64,
+    ) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
         let uncompressed_length = read_variant_u64(&mut self.input)?;
@@ -945,19 +967,30 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
 
         let mut byte_reader: &[u8] = &bytes;
         for idx in 0..(max_handle as usize) {
-            // we do not support a "process_mask" for now, will read all signals
-            match self.meta.signals.lengths[idx] {
-                0 => {} // ignore since variable-length records have no initial value
-                len => {
-                    let tpe = self.meta.signals.types[idx];
-                    if tpe != VarType::Real {
-                        let value = read_fixed_length_str(&mut byte_reader, len as usize)?;
-                        println!("Signal {idx}: {value}");
-                    } else {
-                        let _value = read_f64(&mut byte_reader, self.meta.float_endian)?;
-                        todo!("add support for reals")
+            let signal_length = self.meta.signals.lengths[idx];
+            if self.filter.signals[idx] {
+                let signal_handle = FstSignalHandle::from_index(idx);
+                // we do not support a "process_mask" for now, will read all signals
+                match signal_length {
+                    0 => {} // ignore since variable-length records have no initial value
+                    len => {
+                        let tpe = self.meta.signals.types[idx];
+                        if tpe != FstVarType::Real {
+                            let value = read_bytes(&mut byte_reader, len as usize)?;
+                            (self.callback)(
+                                start_time,
+                                signal_handle,
+                                std::str::from_utf8(&value)?,
+                            );
+                        } else {
+                            let _value = read_f64(&mut byte_reader, self.meta.float_endian)?;
+                            todo!("add support for reals")
+                        }
                     }
                 }
+            } else {
+                // skip
+                self.input.seek(SeekFrom::Current(signal_length as i64))?;
             }
         }
 
@@ -969,6 +1002,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
         let _uncompressed_length = read_variant_u64(&mut self.input)?;
         let compressed_length = read_variant_u64(&mut self.input)?;
+        let _max_handle = read_variant_u64(&mut self.input)?;
         self.input
             .seek(SeekFrom::Current(compressed_length as i64))?;
         Ok(())
@@ -1075,7 +1109,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
     ) -> Result<()> {
         let max_handle = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
-        let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
+        let _packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
@@ -1089,44 +1123,55 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
         let mut scatter_pointer = vec![0u32; max_handle as usize];
         let mut tc_head = vec![0u32; std::cmp::max(1, time_table.len())];
 
-        for (ii, (entry, length)) in chain_table
+        for (signal_idx, (entry, length)) in chain_table
             .iter()
             .zip(chain_table_lengths.iter())
             .take(max_handle as usize)
             .enumerate()
         {
             if *entry != 0 {
-                // TODO: add support for skipping indices
-                self.input
-                    .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-                let (value, skiplen) = read_variant_u32(&mut self.input)?;
-                if value != 0 {
-                    todo!()
+                if self.filter.signals[signal_idx] {
+                    self.input
+                        .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
+                    let (value, skiplen) = read_variant_u32(&mut self.input)?;
+                    if value != 0 {
+                        todo!()
+                    } else {
+                        let dest_length = length - skiplen;
+                        let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
+                        head_pointer.push(mu.len() as u32);
+                        length_remaining.push(dest_length);
+                        mu.append(&mut bytes);
+                    };
+                    let tdelta = if self.meta.signals.lengths[signal_idx] == 1 {
+                        read_one_bit_signal_time_delta(&mu, head_pointer[signal_idx])?
+                    } else {
+                        read_multi_bit_signal_time_delta(&mu, head_pointer[signal_idx])?
+                    };
+                    scatter_pointer[signal_idx] = tc_head[tdelta];
+                    tc_head[tdelta] = signal_idx as u32 + 1;
                 } else {
-                    let dest_length = length - skiplen;
-                    let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
-                    head_pointer.push(mu.len() as u32);
-                    length_remaining.push(dest_length);
-                    mu.append(&mut bytes);
-                };
-                let tdelta = if self.meta.signals.lengths[ii] == 1 {
-                    read_one_bit_signal_time_delta(&mu, head_pointer[ii])?
-                } else {
-                    read_multi_bit_signal_time_delta(&mu, head_pointer[ii])?
-                };
-                scatter_pointer[ii] = tc_head[tdelta];
-                tc_head[tdelta] = ii as u32 + 1;
+                    // add dummy values
+                    head_pointer.push(1234);
+                    length_remaining.push(1234);
+                }
             }
         }
 
         for (time_id, time) in time_table.iter().enumerate() {
+            // while we cannot ignore signal changes before the start of the window
+            // (since the signal might retain values for multiple cycles),
+            // signal changes after our window are completely useless
+            if *time > self.filter.end {
+                break;
+            }
             // handles cannot be zero
             while tc_head[time_id] != 0 {
                 let signal_id = (tc_head[time_id] - 1) as usize;
                 let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
                 let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
                 let signal_len = self.meta.signals.lengths[signal_id];
-                let signal_handle = SignalHandle::from_index(signal_id);
+                let signal_handle = FstSignalHandle::from_index(signal_id);
                 let len = match signal_len {
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
@@ -1141,7 +1186,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
                     len => {
                         let tpe = self.meta.signals.types[signal_id];
                         let signal_len = len as usize;
-                        if tpe != VarType::Real {
+                        if tpe != FstVarType::Real {
                             let (value, len) = if (vli & 1) == 0 {
                                 // if bit0 is zero -> 2-state
                                 let read_len = int_div_ceil(signal_len, 8);
@@ -1185,7 +1230,11 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
 
     fn read(&mut self) -> Result<()> {
         let sections = self.meta.data_sections.clone();
-        for (sec_num, section) in sections.iter().enumerate() {
+        // filter out any sections which are not in our time window
+        let relevant_sections = sections
+            .iter()
+            .filter(|s| self.filter.end >= s.start_time && s.end_time >= self.filter.start);
+        for (sec_num, section) in relevant_sections.enumerate() {
             // skip to section
             self.input.seek(SeekFrom::Start(section.file_offset))?;
             let section_length = read_u64(&mut self.input)?;
@@ -1203,9 +1252,10 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
             let (time_section_length, time_table) =
                 self.read_time_block(section.file_offset, section_length)?;
 
-            if is_first_section {
-                // TODO: what about (beg_tim != time_table[0]) || (blocks_skipped) ?
-                self.read_frame(section.file_offset, section_length)?;
+            // only read frame if this is the first section and there is no other data for
+            // the start time
+            if is_first_section && time_table[0] > start_time {
+                self.read_frame(section.file_offset, section_length, start_time)?;
             } else {
                 self.skip_frame(section.file_offset)?;
             }
@@ -1226,23 +1276,6 @@ impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufReader;
-
-    #[test]
-    fn simple_fst() {
-        let f =
-            std::fs::File::open("fsts/VerilatorBasicTests_Anon.fst").expect("failed to open file!");
-        let mut reader = FstReader::open(BufReader::new(f)).unwrap();
-        reader
-            .read_hierarchy(|entry| println!("{entry:?}"))
-            .unwrap();
-        let filter = SignalFilter::all();
-        reader
-            .read_signals(&filter, |time, handle, value| {
-                println!("{}@{} = {}", handle.0, time, value)
-            })
-            .unwrap();
-    }
 
     #[test]
     fn test_read_variant_i64() {
@@ -1260,6 +1293,11 @@ mod tests {
         assert_eq!(
             read_c_str_fixed_length(&mut input.as_slice(), 4).unwrap(),
             "hi"
-        )
+        );
+        let input2 = [b'h', b'i', b'i', 0u8, b'x'];
+        assert_eq!(
+            read_c_str_fixed_length(&mut input2.as_slice(), 5).unwrap(),
+            "hii"
+        );
     }
 }

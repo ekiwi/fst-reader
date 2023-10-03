@@ -4,4 +4,7 @@
 
 mod reader;
 
-pub use reader::FstReader;
+pub use reader::{
+    FstFilter, FstHierarchyEntry, FstReader, FstScopeType, FstSignalHandle, FstVarDirection,
+    FstVarType,
+};

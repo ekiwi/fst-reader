@@ -2,13 +2,39 @@
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
+use bitvec::prelude::{BitVec, Msb0};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::io::{Read, Seek, SeekFrom};
+use std::num::NonZeroU32;
 
 /// Reads in a FST file.
 pub struct FstReader<R: Read + Seek> {
     input: R,
     meta: MetaData,
+}
+
+pub struct SignalFilter {
+    pub start: u64,
+    pub end: Option<u64>,
+    pub include: Option<Vec<SignalHandle>>,
+}
+
+impl SignalFilter {
+    fn all() -> Self {
+        SignalFilter {
+            start: 0,
+            end: None,
+            include: None,
+        }
+    }
+
+    fn new(start: u64, end: u64, signals: Vec<SignalHandle>) -> Self {
+        SignalFilter {
+            start,
+            end: Some(end),
+            include: Some(signals),
+        }
+    }
 }
 
 impl<R: Read + Seek> FstReader<R> {
@@ -20,17 +46,52 @@ impl<R: Read + Seek> FstReader<R> {
         Ok(FstReader { input, meta })
     }
 
-    /// Iterate over the hierarchy.
-    pub fn hierarchy_iter(&mut self) -> Result<HierarchyIterator> {
+    /// Reads the hierarchy and calls callback for every item.
+    pub fn read_hierarchy(&mut self, mut callback: impl FnMut(HierarchyEntry)) -> Result<()> {
         self.input
             .seek(SeekFrom::Start(self.meta.hierarchy_offset))?;
         let bytes = read_hierarchy_bytes(&mut self.input, self.meta.hierarchy_compression)?;
-        Ok(HierarchyIterator::from_bytes(bytes))
+        let mut input = bytes.as_slice();
+        let mut handle_count = 0u32;
+        while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
+            callback(entry);
+        }
+        Ok(())
     }
 
     /// Read signal values for a specific time interval.
-    pub fn read_signals(&mut self) -> Result<()> {
-        Ok(())
+    pub fn read_signals(
+        &mut self,
+        filter: &SignalFilter,
+        mut callback: impl FnMut(u64, SignalHandle, &str),
+    ) -> Result<()> {
+        // convert user filters
+        let signal_count = self.meta.signals.types.len();
+        let signal_mask = if let Some(signals) = &filter.include {
+            let mut signal_mask = BitMask::repeat(false, signal_count);
+            for sig in signals {
+                let signal_idx = (sig.0.get() - 1) as usize;
+                signal_mask.set(signal_idx, true);
+            }
+            signal_mask
+        } else {
+            // include all
+            BitMask::repeat(true, signal_count)
+        };
+        let data_filter = DataFilter {
+            start: filter.start,
+            end: filter.end.unwrap_or(self.meta.header.end_time),
+            signals: signal_mask,
+        };
+
+        // build and run reader
+        let mut reader = DataReader {
+            input: &mut self.input,
+            meta: &self.meta,
+            filter: &data_filter,
+            callback: &mut callback,
+        };
+        reader.read()
     }
 }
 
@@ -208,9 +269,18 @@ struct MetaData {
 }
 
 #[derive(Debug)]
-pub struct SignalHandle(u32);
+pub struct SignalHandle(NonZeroU32);
 #[derive(Debug)]
 struct EnumHandle(u32);
+
+impl SignalHandle {
+    fn new(value: u32) -> Self {
+        SignalHandle(NonZeroU32::new(value).unwrap())
+    }
+    fn from_index(index: usize) -> Self {
+        SignalHandle(NonZeroU32::new((index as u32) + 1).unwrap())
+    }
+}
 
 #[derive(Debug)]
 pub enum HierarchyEntry {
@@ -653,34 +723,6 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 }
 
-/// Iterates over FST hierarchy entries.
-pub struct HierarchyIterator {
-    bytes: Vec<u8>,
-    offset: usize,
-    handle_count: u32,
-}
-
-impl HierarchyIterator {
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        HierarchyIterator {
-            bytes,
-            offset: 0,
-            handle_count: 0,
-        }
-    }
-}
-
-impl Iterator for HierarchyIterator {
-    type Item = HierarchyEntry;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut input = &self.bytes[self.offset..];
-        let item = read_hierarchy_entry(&mut input, &mut self.handle_count).unwrap();
-        self.offset = input.as_ptr() as usize - self.bytes.as_ptr() as usize;
-        item
-    }
-}
-
 fn read_hierarchy_bytes(
     input: &mut impl Read,
     compression: HierarchyCompression,
@@ -737,9 +779,9 @@ fn read_hierarchy_entry(
             let (alias, _) = read_variant_u32(input)?;
             let (is_alias, handle) = if alias == 0 {
                 *handle_count += 1;
-                (false, SignalHandle(*handle_count))
+                (false, SignalHandle::new(*handle_count))
             } else {
-                (true, SignalHandle(alias))
+                (true, SignalHandle::new(alias))
             };
             HierarchyEntry::Var {
                 tpe,
@@ -769,9 +811,19 @@ fn read_hierarchy_entry(
     Ok(Some(entry))
 }
 
-struct DataReader<R: Read + Seek> {
-    input: R,
-    meta: MetaData,
+type BitMask = BitVec<u8, Msb0>;
+
+struct DataFilter {
+    start: u64,
+    end: u64,
+    signals: BitMask,
+}
+
+struct DataReader<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> {
+    input: &'a mut R,
+    meta: &'a MetaData,
+    filter: &'a DataFilter,
+    callback: &'a mut F,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -850,11 +902,7 @@ fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> 
     Ok((vli >> 1) as usize)
 }
 
-impl<R: Read + Seek> DataReader<R> {
-    fn new(input: R, meta: MetaData) -> Self {
-        DataReader { input: input, meta }
-    }
-
+impl<'a, R: Read + Seek, F: FnMut(u64, SignalHandle, &str)> DataReader<'a, R, F> {
     fn read_time_block(
         &mut self,
         section_start: u64,
@@ -863,7 +911,7 @@ impl<R: Read + Seek> DataReader<R> {
         // the time block meta data is in the last 24 bytes at the end of the section
         self.input
             .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
-        let uncompressed_length = read_u64(&mut self.input)?;
+        let uncompressed_length = read_u64(self.input)?;
         let compressed_length = read_u64(&mut self.input)?;
         let number_of_items = read_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
@@ -1078,13 +1126,12 @@ impl<R: Read + Seek> DataReader<R> {
                 let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
                 let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
                 let signal_len = self.meta.signals.lengths[signal_id];
+                let signal_handle = SignalHandle::from_index(signal_id);
                 let len = match signal_len {
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
-                        println!(
-                            "{signal_id}@{time} = {}",
-                            String::from_utf8(vec![value]).unwrap()
-                        );
+                        let value_buf = [value];
+                        (self.callback)(*time, signal_handle, std::str::from_utf8(&value_buf)?);
                         0 // no additional bytes consumed
                     }
                     0 => {
@@ -1106,7 +1153,7 @@ impl<R: Read + Seek> DataReader<R> {
                             } else {
                                 (read_bytes(&mut mu_slice, signal_len)?, len)
                             };
-                            println!("{signal_id}@{time} = {}", String::from_utf8(value).unwrap());
+                            (self.callback)(*time, signal_handle, std::str::from_utf8(&value)?);
                             len
                         } else {
                             todo!("implement support for reals")
@@ -1186,10 +1233,15 @@ mod tests {
         let f =
             std::fs::File::open("fsts/VerilatorBasicTests_Anon.fst").expect("failed to open file!");
         let mut reader = FstReader::open(BufReader::new(f)).unwrap();
-        for entry in reader.hierarchy_iter().unwrap() {
-            println!("{entry:?}");
-        }
-        reader.read_signals().unwrap();
+        reader
+            .read_hierarchy(|entry| println!("{entry:?}"))
+            .unwrap();
+        let filter = SignalFilter::all();
+        reader
+            .read_signals(&filter, |time, handle, value| {
+                println!("{}@{} = {}", handle.0, time, value)
+            })
+            .unwrap();
     }
 
     #[test]

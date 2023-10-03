@@ -3,3 +3,5 @@
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
 mod reader;
+
+pub use reader::FstReader;

@@ -1126,6 +1126,43 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         Ok((chain_table, chain_table_lengths, prev_idx))
     }
 
+    fn read_value_change_alias(
+        mut chain_bytes: &[u8],
+        max_handle: u64,
+    ) -> Result<(Vec<i64>, Vec<u32>, usize)> {
+        let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+        let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
+        let mut prev_idx = 0usize;
+        let mut value = 0i64;
+        while !chain_bytes.is_empty() {
+            let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
+            let idx = chain_table.len();
+            if raw_val == 0 {
+                chain_table.push(0);
+                let (len, _) = read_variant_u32(&mut chain_bytes)?;
+                chain_table_lengths[idx] = (-(len as i64)) as u32;
+            } else if (raw_val & 1) == 1 {
+                value += (raw_val as i64) >> 1;
+                match chain_table.last() {
+                    None => {} // this is the first iteration
+                    Some(last_value) => {
+                        let len = (value - last_value) as u32;
+                        chain_table_lengths[prev_idx] = len;
+                    }
+                };
+                chain_table.push(value);
+                prev_idx = idx;
+            } else {
+                let zeros = raw_val >> 1;
+                for _ in 0..zeros {
+                    chain_table.push(0);
+                }
+            }
+        }
+
+        Ok((chain_table, chain_table_lengths, prev_idx))
+    }
+
     fn fixup_chain_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
         assert_eq!(chain_table.len(), chain_lengths.len());
         for ii in 0..chain_table.len() {
@@ -1161,7 +1198,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             if section_kind == DataSectionKind::DynamicAlias2 {
                 Self::read_value_change_alias2(&chain_bytes, max_handle)?
             } else {
-                todo!("support data section kind {section_kind:?}")
+                Self::read_value_change_alias(&chain_bytes, max_handle)?
             };
         let last_table_entry = (chain_start as i64) - (start as i64); // indx_pos - vc_start
         chain_table.push(last_table_entry);

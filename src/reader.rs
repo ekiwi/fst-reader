@@ -519,8 +519,8 @@ fn read_compressed_bytes(
         let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
         d.read_to_end(&mut uncompressed)?;
         // sanity checks
-        assert_eq!(d.total_in(), compressed_length);
         assert_eq!(d.total_out(), uncompressed_length);
+        assert!(d.total_in() <= compressed_length);
         // the decoder often reads more bytes than it should, we fix this here
         d.into_inner()
             .seek(SeekFrom::Start(start + compressed_length))?;
@@ -1209,15 +1209,28 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         Ok((chain_table, chain_table_lengths))
     }
 
-    // TODO: find better name for this function
-    fn read_values(&mut self, chain_table_length: u32) -> Result<(Vec<u8>, u32)> {
+    fn read_packed_values(
+        &mut self,
+        chain_table_length: u32,
+        packtpe: ValueChangePackType,
+    ) -> Result<Vec<u8>> {
         let (value, skiplen) = read_variant_u32(&mut self.input)?;
         if value != 0 {
-            todo!()
+            let uncompressed_length = value as u64;
+            let compressed_length = (chain_table_length - skiplen) as u64;
+            // let compressed = read_bytes(&mut self.input, source_length as usize)?;
+            let uncompressed: Vec<u8> = match packtpe {
+                ValueChangePackType::Lz4 => todo!("Lz4"),
+                ValueChangePackType::FastLz => todo!("FastLZ"),
+                ValueChangePackType::Zlib => {
+                    read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?
+                }
+            };
+            Ok(uncompressed)
         } else {
             let dest_length = chain_table_length - skiplen;
             let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
-            Ok((bytes, dest_length))
+            Ok(bytes)
         }
     }
 
@@ -1231,7 +1244,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
     ) -> Result<()> {
         let max_handle = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
-        let _packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
+        let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
@@ -1256,9 +1269,9 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
 
-                    let (mut bytes, dest_length) = self.read_values(*length)?;
+                    let mut bytes = self.read_packed_values(*length, packtpe)?;
                     head_pointer.push(mu.len() as u32);
-                    length_remaining.push(dest_length);
+                    length_remaining.push(bytes.len() as u32);
                     mu.append(&mut bytes);
 
                     let tdelta = if self.meta.signals.lengths[signal_idx] == 1 {

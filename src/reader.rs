@@ -497,19 +497,27 @@ fn read_c_str_fixed_length(input: &mut impl Read, len: usize) -> Result<String> 
 }
 
 fn read_compressed_bytes(
-    input: &mut impl Read,
+    input: &mut (impl Read + Seek),
     uncompressed_length: u64,
     compressed_length: u64,
 ) -> Result<Vec<u8>> {
-    let bytes = read_bytes(input, compressed_length as usize)?;
-    if uncompressed_length == compressed_length {
-        Ok(bytes)
+    let bytes = if uncompressed_length == compressed_length {
+        read_bytes(input, compressed_length as usize)?
     } else {
+        let start = input.stream_position().unwrap();
         let mut d = flate2::read::ZlibDecoder::new(input);
         let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
         d.read_to_end(&mut uncompressed)?;
-        Ok(uncompressed)
-    }
+        // sanity checks
+        assert_eq!(d.total_in(), compressed_length);
+        assert_eq!(d.total_out(), uncompressed_length);
+        // the decoder often reads more bytes than it should, we fix this here
+        d.into_inner()
+            .seek(SeekFrom::Start(start + compressed_length))?;
+        uncompressed
+    };
+    assert_eq!(bytes.len(), uncompressed_length as usize);
+    Ok(bytes)
 }
 
 fn read_block_tpe(input: &mut impl Read) -> Result<BlockType> {
@@ -661,7 +669,6 @@ impl<R: Read + Seek> HeaderReader<R> {
 
         let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
 
-        // println!("max_handle = {max_handle}");
         let mut longest_signal_value_len = 32;
         let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
         let mut types: Vec<FstVarType> = Vec::with_capacity(max_handle as usize);
@@ -679,7 +686,6 @@ impl<R: Read + Seek> HeaderReader<R> {
                 }
                 (length, FstVarType::Wire)
             };
-            // println!("{ii} {length} {tpe:?}");
             lengths.push(length);
             types.push(tpe);
         }
@@ -704,7 +710,13 @@ impl<R: Read + Seek> HeaderReader<R> {
     fn read(&mut self) -> Result<()> {
         loop {
             let block_tpe = match read_block_tpe(&mut self.input) {
-                Err(_) => break,
+                Err(ReaderError {
+                    kind: ReaderErrorKind::IO(e),
+                }) => {
+                    //println!("{e:?}");
+                    break;
+                }
+                Err(other) => return Err(other),
                 Ok(tpe) => tpe,
             };
             // println!("{block_tpe:?}");
@@ -740,7 +752,7 @@ impl<R: Read + Seek> HeaderReader<R> {
 }
 
 fn read_hierarchy_bytes(
-    input: &mut impl Read,
+    input: &mut (impl Read + Seek),
     compression: HierarchyCompression,
 ) -> Result<Vec<u8>> {
     let section_length = read_u64(input)? as usize;
@@ -749,10 +761,14 @@ fn read_hierarchy_bytes(
 
     let bytes = match compression {
         HierarchyCompression::ZLib => {
+            let start = input.stream_position().unwrap();
             let mut d = flate2::read::GzDecoder::new(input);
-            let mut decompressed: Vec<u8> = Vec::with_capacity(uncompressed_length);
-            d.read_to_end(&mut decompressed)?;
-            decompressed
+            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
+            d.read_to_end(&mut uncompressed)?;
+            // the decoder often reads more bytes than it should, we fix this here
+            d.into_inner()
+                .seek(SeekFrom::Start(start + compressed_length as u64))?;
+            uncompressed
         }
         HierarchyCompression::Lz4 => {
             let compressed = read_bytes(input, compressed_length)?;

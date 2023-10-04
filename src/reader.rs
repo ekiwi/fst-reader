@@ -1209,6 +1209,18 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         Ok((chain_table, chain_table_lengths))
     }
 
+    // TODO: find better name for this function
+    fn read_values(&mut self, chain_table_length: u32) -> Result<(Vec<u8>, u32)> {
+        let (value, skiplen) = read_variant_u32(&mut self.input)?;
+        if value != 0 {
+            todo!()
+        } else {
+            let dest_length = chain_table_length - skiplen;
+            let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
+            Ok((bytes, dest_length))
+        }
+    }
+
     fn read_value_changes(
         &mut self,
         section_kind: DataSectionKind,
@@ -1243,16 +1255,12 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                 if self.filter.signals[signal_idx] {
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-                    let (value, skiplen) = read_variant_u32(&mut self.input)?;
-                    if value != 0 {
-                        todo!()
-                    } else {
-                        let dest_length = length - skiplen;
-                        let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
-                        head_pointer.push(mu.len() as u32);
-                        length_remaining.push(dest_length);
-                        mu.append(&mut bytes);
-                    };
+
+                    let (mut bytes, dest_length) = self.read_values(*length)?;
+                    head_pointer.push(mu.len() as u32);
+                    length_remaining.push(dest_length);
+                    mu.append(&mut bytes);
+
                     let tdelta = if self.meta.signals.lengths[signal_idx] == 1 {
                         read_one_bit_signal_time_delta(&mu, head_pointer[signal_idx])?
                     } else {

@@ -220,7 +220,7 @@ pub enum FstVarDirection {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, PartialEq)]
 enum AttributeType {
     Misc = 0,
     Array = 1,
@@ -229,7 +229,7 @@ enum AttributeType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, PartialEq)]
 enum MiscType {
     Comment = 0,
     EnvVar = 1,
@@ -324,6 +324,16 @@ pub enum FstHierarchyEntry {
     AttributeBegin {
         name: String,
         // TODO
+    },
+    PathName {
+        /// this id is used by other attributes to refer to the path
+        id: u64,
+        name: String,
+    },
+    SourceStem {
+        is_instantiation: bool,
+        path_id: u64,
+        line: u64,
     },
     AttributeEnd,
 }
@@ -780,6 +790,33 @@ fn read_hierarchy_bytes(
     Ok(bytes)
 }
 
+fn parse_misc_attribute(
+    name: String,
+    tpe: MiscType,
+    arg: u64,
+    arg2: Option<u64>,
+) -> FstHierarchyEntry {
+    match tpe {
+        MiscType::Comment => todo!("comment Attribute"),
+        MiscType::EnvVar => todo!("EnvVar Attribute"),
+        MiscType::SupVar => todo!("SupVar Attribute"),
+        MiscType::PathName => FstHierarchyEntry::PathName { name, id: arg },
+        MiscType::SourceStem => FstHierarchyEntry::SourceStem {
+            is_instantiation: false,
+            path_id: arg2.unwrap(),
+            line: arg,
+        },
+        MiscType::SourceInstantiationStem => FstHierarchyEntry::SourceStem {
+            is_instantiation: true,
+            path_id: arg2.unwrap(),
+            line: arg,
+        },
+        MiscType::ValueList => todo!("ValueList Attribute"),
+        MiscType::EnumTable => todo!("EnumTable Attribute"),
+        MiscType::Unknown => todo!("unknown Attribute"),
+    }
+}
+
 fn read_hierarchy_entry(
     input: &mut impl Read,
     handle_count: &mut u32,
@@ -833,8 +870,25 @@ fn read_hierarchy_entry(
             FstHierarchyEntry::UpScope
         }
         252 => {
-            // GenAttributeBegin (ScopeType)
-            todo!("Deal with Attribute Begin entry!")
+            let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
+            let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
+            let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
+            let arg = read_variant_u64(input)?;
+            match tpe {
+                AttributeType::Misc => {
+                    let arg2 = if subtype == MiscType::SourceStem
+                        || subtype == MiscType::SourceInstantiationStem
+                    {
+                        Some(read_variant_u64(&mut name.as_bytes())?)
+                    } else {
+                        None
+                    };
+                    parse_misc_attribute(name, subtype, arg, arg2)
+                }
+                AttributeType::Array => todo!("ARRAY attributes"),
+                AttributeType::Enum => todo!("ENUM attributes"),
+                AttributeType::Pack => todo!("PACK attributes"),
+            }
         }
         253 => {
             // GenAttributeEnd (ScopeType)

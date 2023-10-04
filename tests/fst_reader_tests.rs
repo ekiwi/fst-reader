@@ -3,6 +3,7 @@
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
 use fst_native::*;
+use std::fmt::format;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -14,6 +15,12 @@ fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
         FstHierarchyEntry::Var { name, handle, .. } => format!("({handle}): {name}"),
         FstHierarchyEntry::AttributeBegin { name } => format!("BeginAttr: {name}"),
         FstHierarchyEntry::AttributeEnd => format!("EndAttr"),
+        FstHierarchyEntry::PathName { name, id } => format!("PathName: {id} -> {name}"),
+        FstHierarchyEntry::SourceStem {
+            is_instantiation,
+            path_id,
+            line,
+        } => format!("SourceStem:: {is_instantiation}, {path_id}, {line}"),
     }
 }
 

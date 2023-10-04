@@ -5,12 +5,14 @@
 use bitvec::prelude::{BitVec, Msb0};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::fmt::Formatter;
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
 
 /// Reads in a FST file.
 pub struct FstReader<R: Read + Seek> {
     input: R,
+    uncompressed_input: Option<BufReader<std::fs::File>>,
     meta: MetaData,
 }
 
@@ -56,31 +58,45 @@ impl FstFilter {
 
 impl<R: Read + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
-    pub fn open(input: R) -> Result<Self> {
-        let mut header_reader = HeaderReader::new(input);
-        header_reader.read()?;
-        let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
-        Ok(FstReader { input, meta })
+    pub fn open(mut input: R) -> Result<Self> {
+        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
+        match uncompressed_input {
+            None => {
+                let mut header_reader = HeaderReader::new(input);
+                header_reader.read()?;
+                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input,
+                    uncompressed_input: None,
+                    meta,
+                })
+            }
+            Some(uc) => {
+                let mut header_reader = HeaderReader::new(uc);
+                header_reader.read()?;
+                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input,
+                    uncompressed_input: Some(uc2),
+                    meta,
+                })
+            }
+        }
     }
 
     /// Reads the hierarchy and calls callback for every item.
     pub fn read_hierarchy(&mut self, mut callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
-        self.input
-            .seek(SeekFrom::Start(self.meta.hierarchy_offset))?;
-        let bytes = read_hierarchy_bytes(&mut self.input, self.meta.hierarchy_compression)?;
-        let mut input = bytes.as_slice();
-        let mut handle_count = 0u32;
-        while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
-            callback(entry);
+        match &mut self.uncompressed_input {
+            None => read_hierarchy(&mut self.input, &self.meta, callback),
+            Some(uc) => read_hierarchy(uc, &self.meta, callback),
         }
-        Ok(())
     }
 
     /// Read signal values for a specific time interval.
     pub fn read_signals(
         &mut self,
         filter: &FstFilter,
-        mut callback: impl FnMut(u64, FstSignalHandle, &str),
+        callback: impl FnMut(u64, FstSignalHandle, &str),
     ) -> Result<()> {
         // convert user filters
         let signal_count = self.meta.signals.types.len();
@@ -102,13 +118,59 @@ impl<R: Read + Seek> FstReader<R> {
         };
 
         // build and run reader
-        let mut reader = DataReader {
-            input: &mut self.input,
-            meta: &self.meta,
-            filter: &data_filter,
-            callback: &mut callback,
-        };
-        reader.read()
+        match &mut self.uncompressed_input {
+            None => read_signals(&mut self.input, &self.meta, &data_filter, callback),
+            Some(uc) => read_signals(uc, &self.meta, &data_filter, callback),
+        }
+    }
+}
+
+fn read_hierarchy(
+    input: &mut (impl Read + Seek),
+    meta: &MetaData,
+    mut callback: impl FnMut(FstHierarchyEntry),
+) -> Result<()> {
+    input.seek(SeekFrom::Start(meta.hierarchy_offset))?;
+    let bytes = read_hierarchy_bytes(input, meta.hierarchy_compression)?;
+    let mut input = bytes.as_slice();
+    let mut handle_count = 0u32;
+    while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
+        callback(entry);
+    }
+    Ok(())
+}
+
+fn read_signals(
+    input: &mut (impl Read + Seek),
+    meta: &MetaData,
+    filter: &DataFilter,
+    mut callback: impl FnMut(u64, FstSignalHandle, &str),
+) -> Result<()> {
+    let mut reader = DataReader {
+        input,
+        meta,
+        filter,
+        callback: &mut callback,
+    };
+    reader.read()
+}
+
+/// Checks to see if the whole file is compressed in which case it is decompressed
+/// to a temp file which is returned.
+fn uncompress_gzip_wrapper(
+    input: &mut (impl Read + Seek),
+) -> Result<Option<BufReader<std::fs::File>>> {
+    let block_tpe = read_block_tpe(input)?;
+    if block_tpe != BlockType::GZipWrapper {
+        // no gzip wrapper
+        input.seek(SeekFrom::Start(0))?;
+        return Ok(None);
+    } else {
+        // uncompress
+        let section_length = read_u64(input)?;
+        let uncompress_length = read_u64(input)?;
+
+        todo!("GZIP Wrapper")
     }
 }
 
@@ -121,7 +183,7 @@ enum FileType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, PartialEq)]
 enum BlockType {
     Header = 0,
     VcData = 1,

@@ -5,15 +5,18 @@
 use bitvec::prelude::{BitVec, Msb0};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::fmt::Formatter;
-use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
 
 /// Reads in a FST file.
 pub struct FstReader<R: Read + Seek> {
-    input: R,
-    uncompressed_input: Option<BufReader<std::fs::File>>,
+    input: InputVariant<R>,
     meta: MetaData,
+}
+
+enum InputVariant<R: Read + Seek> {
+    Original(R),
+    Uncompressed(BufReader<std::fs::File>),
 }
 
 pub struct FstFilter {
@@ -66,8 +69,7 @@ impl<R: Read + Seek> FstReader<R> {
                 header_reader.read()?;
                 let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
-                    input,
-                    uncompressed_input: None,
+                    input: InputVariant::Original(input),
                     meta,
                 })
             }
@@ -76,8 +78,7 @@ impl<R: Read + Seek> FstReader<R> {
                 header_reader.read()?;
                 let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
-                    input,
-                    uncompressed_input: Some(uc2),
+                    input: InputVariant::Uncompressed(uc2),
                     meta,
                 })
             }
@@ -85,10 +86,10 @@ impl<R: Read + Seek> FstReader<R> {
     }
 
     /// Reads the hierarchy and calls callback for every item.
-    pub fn read_hierarchy(&mut self, mut callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
-        match &mut self.uncompressed_input {
-            None => read_hierarchy(&mut self.input, &self.meta, callback),
-            Some(uc) => read_hierarchy(uc, &self.meta, callback),
+    pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
+        match &mut self.input {
+            InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::Uncompressed(input) => read_hierarchy(input, &self.meta, callback),
         }
     }
 
@@ -118,9 +119,13 @@ impl<R: Read + Seek> FstReader<R> {
         };
 
         // build and run reader
-        match &mut self.uncompressed_input {
-            None => read_signals(&mut self.input, &self.meta, &data_filter, callback),
-            Some(uc) => read_signals(uc, &self.meta, &data_filter, callback),
+        match &mut self.input {
+            InputVariant::Original(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
+            InputVariant::Uncompressed(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
         }
     }
 }
@@ -168,9 +173,26 @@ fn uncompress_gzip_wrapper(
     } else {
         // uncompress
         let section_length = read_u64(input)?;
-        let uncompress_length = read_u64(input)?;
+        let uncompress_length = read_u64(input)? as usize;
+        if section_length == 0 {
+            let kind = ReaderErrorKind::NotFinishedCompressing();
+            return Err(ReaderError { kind });
+        }
 
-        todo!("GZIP Wrapper")
+        let mut target = tempfile::tempfile().unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(input);
+        let mut buf = vec![0u8; 32768]; // FST_GZIO_LEN
+        let mut remaining = uncompress_length;
+        while remaining > 0 {
+            let read_len = std::cmp::min(buf.len(), remaining);
+            remaining -= read_len;
+            decoder.read_exact(&mut buf[..read_len])?;
+            target.write(&mut buf[..read_len])?;
+        }
+        // go to start of new file and return
+        target.seek(SeekFrom::Start(0))?;
+        let new_input = std::io::BufReader::new(target);
+        Ok(Some(new_input))
     }
 }
 
@@ -415,6 +437,8 @@ pub enum ReaderErrorKind {
     StringParse2(std::string::FromUtf8Error),
     ParseVariant(),
     DecompressLz4(lz4_flex::block::DecompressError),
+    /// The FST file is still being compressed into its final GZIP wrapper.
+    NotFinishedCompressing(),
 }
 #[derive(Debug)]
 pub struct ReaderError {

@@ -343,7 +343,6 @@ pub enum ReaderErrorKind {
     StringParse2(std::string::FromUtf8Error),
     ParseVariant(),
     DecompressLz4(lz4_flex::block::DecompressError),
-    DecompressZLib(miniz_oxide::inflate::DecompressError),
 }
 #[derive(Debug)]
 pub struct ReaderError {
@@ -385,12 +384,12 @@ impl From<lz4_flex::block::DecompressError> for ReaderError {
     }
 }
 
-impl From<miniz_oxide::inflate::DecompressError> for ReaderError {
-    fn from(value: miniz_oxide::inflate::DecompressError) -> Self {
-        let kind = ReaderErrorKind::DecompressZLib(value);
-        ReaderError { kind }
-    }
-}
+// impl From<miniz_oxide::inflate::DecompressError> for ReaderError {
+//     fn from(value: miniz_oxide::inflate::DecompressError) -> Self {
+//         let kind = ReaderErrorKind::DecompressZLib(value);
+//         ReaderError { kind }
+//     }
+// }
 
 pub type Result<T> = std::result::Result<T, ReaderError>;
 
@@ -506,10 +505,10 @@ fn read_compressed_bytes(
     if uncompressed_length == compressed_length {
         Ok(bytes)
     } else {
-        Ok(miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-            &bytes,
-            uncompressed_length as usize,
-        )?)
+        let mut d = flate2::read::ZlibDecoder::new(input);
+        let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
+        d.read_to_end(&mut uncompressed)?;
+        Ok(uncompressed)
     }
 }
 
@@ -749,7 +748,12 @@ fn read_hierarchy_bytes(
     let compressed_length = section_length - 2 * 8;
 
     let bytes = match compression {
-        HierarchyCompression::ZLib => todo!("ZLib compression is currently not supported!"),
+        HierarchyCompression::ZLib => {
+            let mut d = flate2::read::GzDecoder::new(input);
+            let mut decompressed: Vec<u8> = Vec::with_capacity(uncompressed_length);
+            d.read_to_end(&mut decompressed)?;
+            decompressed
+        }
         HierarchyCompression::Lz4 => {
             let compressed = read_bytes(input, compressed_length)?;
             lz4_flex::decompress(&compressed, uncompressed_length)?

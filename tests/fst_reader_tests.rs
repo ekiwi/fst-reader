@@ -74,3 +74,10 @@ fn read_verilator_basic_tests_anon_time_filter() {
     let filter = FstFilter::filter_time(3, 7);
     run_test("fsts/VerilatorBasicTests_Anon.fst", &filter);
 }
+
+#[test]
+#[ignore]
+fn read_des() {
+    // des.fst is from the GTKWave examples
+    run_dry_run("fsts/des.fst", &FstFilter::all());
+}

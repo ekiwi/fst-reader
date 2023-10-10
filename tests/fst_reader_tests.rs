@@ -3,7 +3,6 @@
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
 use fst_native::*;
-use std::fmt::format;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -32,9 +31,11 @@ fn run_dry_run(filename: &str, filter: &FstFilter) {
     let f = File::open(filename).expect(&format!("Failed to open {}", filename));
     let mut reader = FstReader::open(BufReader::new(f))
         .expect(&format!("Failed to read header from {}", filename));
-    reader
-        .read_hierarchy(|entry| println!("{}", hierarchy_to_str(&entry)))
-        .expect(&format!("Failed to read hierarchy from {}", filename));
+    if true {
+        reader
+            .read_hierarchy(|entry| println!("{}", hierarchy_to_str(&entry)))
+            .expect(&format!("Failed to read hierarchy from {}", filename));
+    }
     reader
         .read_signals(filter, |time, handle, value| {
             println!("{}", &change_to_str(handle, time, value));
@@ -80,11 +81,4 @@ fn read_verilator_basic_tests_anon_time_filter() {
     // a higher start time should not affect anything (since there is only a single VC block in this file)
     let filter = FstFilter::filter_time(3, 7);
     run_test("fsts/VerilatorBasicTests_Anon.fst", &filter);
-}
-
-#[test]
-#[ignore]
-fn read_des() {
-    // des.fst is from the GTKWave examples
-    run_dry_run("fsts/des.fst", &FstFilter::all());
 }

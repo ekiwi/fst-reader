@@ -59,6 +59,22 @@ impl FstFilter {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FstHeader {
+    /// time of first sample
+    pub start_time: u64,
+    /// time of last sample
+    pub end_time: u64,
+    /// number of variables in the design
+    pub var_count: u64,
+    /// the highest signal handle; indicates the number of unique signals
+    pub max_handle: u64,
+    /// human readable version string
+    pub version: String,
+    /// human readable times stamp
+    pub date: String,
+}
+
 impl<R: Read + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
     pub fn open(mut input: R) -> Result<Self> {
@@ -82,6 +98,17 @@ impl<R: Read + Seek> FstReader<R> {
                     meta,
                 })
             }
+        }
+    }
+
+    pub fn get_header(&self) -> FstHeader {
+        FstHeader {
+            start_time: self.meta.header.start_time,
+            end_time: self.meta.header.end_time,
+            var_count: self.meta.header.var_count,
+            max_handle: self.meta.header.max_var_id_code,
+            version: self.meta.header.version.clone(),
+            date: self.meta.header.date.clone(),
         }
     }
 

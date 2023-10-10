@@ -5,6 +5,6 @@
 mod reader;
 
 pub use reader::{
-    FstFilter, FstHierarchyEntry, FstReader, FstScopeType, FstSignalHandle, FstVarDirection,
-    FstVarType,
+    FstFilter, FstHeader, FstHierarchyEntry, FstReader, FstScopeType, FstSignalHandle,
+    FstVarDirection, FstVarType,
 };

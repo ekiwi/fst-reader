@@ -31,11 +31,9 @@ fn run_dry_run(filename: &str, filter: &FstFilter) {
     let f = File::open(filename).expect(&format!("Failed to open {}", filename));
     let mut reader = FstReader::open(BufReader::new(f))
         .expect(&format!("Failed to read header from {}", filename));
-    if true {
-        reader
-            .read_hierarchy(|entry| println!("{}", hierarchy_to_str(&entry)))
-            .expect(&format!("Failed to read hierarchy from {}", filename));
-    }
+    reader
+        .read_hierarchy(|entry| println!("{}", hierarchy_to_str(&entry)))
+        .expect(&format!("Failed to read hierarchy from {}", filename));
     reader
         .read_signals(filter, |time, handle, value| {
             println!("{}", &change_to_str(handle, time, value));

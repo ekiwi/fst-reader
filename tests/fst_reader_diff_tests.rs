@@ -5,8 +5,6 @@
 use fst_native::*;
 use std::ffi::{c_void, CStr, CString};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
     unsafe {

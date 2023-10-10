@@ -1342,7 +1342,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             Ok(uncompressed)
         } else {
             let dest_length = chain_table_length - skiplen;
-            let mut bytes = read_bytes(&mut self.input, dest_length as usize)?;
+            let bytes = read_bytes(&mut self.input, dest_length as usize)?;
             Ok(bytes)
         }
     }

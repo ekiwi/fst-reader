@@ -70,6 +70,7 @@ fn diff_signals<R: std::io::Read + std::io::Seek>(
         let actual = (time, handle.get_index() + 1, value);
         let expected = (exp_time, exp_handle as usize, exp_value.as_str());
         assert_eq!(actual, expected);
+        // println!("{actual:?}");
     };
     let filter = FstFilter::all();
     our_reader.read_signals(&filter, check).unwrap();
@@ -103,7 +104,6 @@ fn diff_verilator_basic_tests_anon() {
 }
 
 #[test]
-#[ignore]
 fn diff_des() {
     run_diff_test("fsts/des.fst", &FstFilter::all());
 }

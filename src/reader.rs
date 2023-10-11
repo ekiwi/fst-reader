@@ -626,8 +626,9 @@ fn read_compressed_bytes(
     input: &mut (impl Read + Seek),
     uncompressed_length: u64,
     compressed_length: u64,
+    skip_equal_len: bool,
 ) -> Result<Vec<u8>> {
-    let bytes = if uncompressed_length == compressed_length {
+    let bytes = if uncompressed_length == compressed_length && skip_equal_len {
         read_bytes(input, compressed_length as usize)?
     } else {
         let start = input.stream_position().unwrap();
@@ -793,7 +794,12 @@ impl<R: Read + Seek> HeaderReader<R> {
         let max_handle = read_u64(&mut self.input)?;
         let compressed_length = section_length - 3 * 8;
 
-        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(
+            &mut self.input,
+            uncompressed_length,
+            compressed_length,
+            true,
+        )?;
 
         let mut longest_signal_value_len = 32;
         let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
@@ -1125,7 +1131,12 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         // now that we know how long the block actually is, we can go back to it
         self.input
             .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
-        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(
+            &mut self.input,
+            uncompressed_length,
+            compressed_length,
+            true,
+        )?;
         let mut byte_reader: &[u8] = &bytes;
         let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
         let mut time_val: u64 = 0; // running time counter
@@ -1152,7 +1163,12 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         let compressed_length = read_variant_u64(&mut self.input)?;
         let max_handle = read_variant_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
-        let bytes = read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?;
+        let bytes = read_compressed_bytes(
+            &mut self.input,
+            uncompressed_length,
+            compressed_length,
+            true,
+        )?;
 
         let mut byte_reader: &[u8] = &bytes;
         for idx in 0..(max_handle as usize) {
@@ -1330,13 +1346,20 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         let (value, skiplen) = read_variant_u32(&mut self.input)?;
         if value != 0 {
             let uncompressed_length = value as u64;
-            let compressed_length = (chain_table_length - skiplen) as u64;
-            // let compressed = read_bytes(&mut self.input, source_length as usize)?;
+            // note: for compressed entries, value is actually the first byte of the compressed block
+            let compressed_length = chain_table_length as u64;
             let uncompressed: Vec<u8> = match packtpe {
                 ValueChangePackType::Lz4 => todo!("Lz4"),
                 ValueChangePackType::FastLz => todo!("FastLZ"),
                 ValueChangePackType::Zlib => {
-                    read_compressed_bytes(&mut self.input, uncompressed_length, compressed_length)?
+                    // Important: for signals, we do not skip decompression,
+                    // even if the compressed and uncompressed length are the same
+                    read_compressed_bytes(
+                        &mut self.input,
+                        uncompressed_length,
+                        compressed_length,
+                        false,
+                    )?
                 }
             };
             Ok(uncompressed)
@@ -1378,23 +1401,32 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             .enumerate()
         {
             if *entry != 0 {
+                // was there a signal change?
                 if self.filter.signals[signal_idx] {
+                    // is the signal supposed to be included?
+                    // read all signal values
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-
                     let mut bytes = self.read_packed_values(*length, packtpe)?;
+
+                    // read first time delta
+                    let len = self.meta.signals.lengths[signal_idx];
+                    let tdelta = if len == 1 {
+                        read_one_bit_signal_time_delta(&bytes, 0)?
+                    } else {
+                        read_multi_bit_signal_time_delta(&bytes, 0)?
+                    };
+
+                    // remember where we stored the signal data and how long it is
                     head_pointer.push(mu.len() as u32);
                     length_remaining.push(bytes.len() as u32);
                     mu.append(&mut bytes);
 
-                    let tdelta = if self.meta.signals.lengths[signal_idx] == 1 {
-                        read_one_bit_signal_time_delta(&mu, head_pointer[signal_idx])?
-                    } else {
-                        read_multi_bit_signal_time_delta(&mu, head_pointer[signal_idx])?
-                    };
+                    // remember at what time step we will read this signal
                     scatter_pointer[signal_idx] = tc_head[tdelta];
-                    tc_head[tdelta] = signal_idx as u32 + 1;
+                    tc_head[tdelta] = signal_idx as u32 + 1; // index to handle
                 } else {
+                    // an entry of 0 means that the signal did not change in this block
                     // add dummy values
                     head_pointer.push(1234);
                     length_remaining.push(1234);
@@ -1411,7 +1443,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             }
             // handles cannot be zero
             while tc_head[time_id] != 0 {
-                let signal_id = (tc_head[time_id] - 1) as usize;
+                let signal_id = (tc_head[time_id] - 1) as usize; // convert handle to index
                 let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
                 let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
                 let signal_len = self.meta.signals.lengths[signal_id];
@@ -1452,19 +1484,24 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
 
                 // update pointers
                 let total_skiplen = skiplen + len;
+                // advance "slice" for signal values
                 head_pointer[signal_id] += total_skiplen;
                 length_remaining[signal_id] -= total_skiplen;
+                // find the next signal to read in this time step
                 tc_head[time_id] = scatter_pointer[signal_id];
+                // invalidate pointer
                 scatter_pointer[signal_id] = 0;
 
+                // is there more data for this signal in the current block?
                 if length_remaining[signal_id] > 0 {
                     let tdelta = if signal_len == 1 {
                         read_one_bit_signal_time_delta(&mu, head_pointer[signal_id])?
                     } else {
                         read_multi_bit_signal_time_delta(&mu, head_pointer[signal_id])?
                     };
+                    // point to the next time step
                     scatter_pointer[signal_id] = tc_head[time_id + tdelta];
-                    tc_head[time_id + tdelta] = (signal_id + 1) as u32;
+                    tc_head[time_id + tdelta] = (signal_id + 1) as u32; // store handle
                 }
             }
         }

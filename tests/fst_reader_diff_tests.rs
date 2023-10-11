@@ -76,14 +76,6 @@ fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
     con.to_string()
 }
 
-fn fst_attribute_tpe_to_string(tpe: fst_sys::fstAttrType) -> String {
-    let con = match tpe {
-        fst_sys::fstAttrType_FST_AT_MISC => "Misc",
-        other => todo!("scope type: {other}"),
-    };
-    con.to_string()
-}
-
 unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) -> String {
     let name = fst_sys_hierarchy_read_name(attr.name, attr.name_length);
     match attr.typ as fst_sys::fstAttrType {
@@ -104,7 +96,7 @@ unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierA
                 other => todo!("misc attribute of subtype {other}"),
             }
         }
-        other => format!("BeginAttr: {name}"),
+        _ => format!("BeginAttr: {name}"),
     }
 }
 
@@ -121,9 +113,7 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
                 unsafe { fst_sys_scope_tpe_to_string(entry.u.scope.typ as fst_sys::fstScopeType) };
             format!("Scope: {name} ({tpe}) {component}")
         }
-        fst_sys::fstHierType_FST_HT_UPSCOPE => {
-            format!("UpScope")
-        }
+        fst_sys::fstHierType_FST_HT_UPSCOPE => "UpScope".to_string(),
         fst_sys::fstHierType_FST_HT_VAR => {
             let handle = unsafe { entry.u.var.handle };
             let name =
@@ -131,9 +121,7 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
             format!("(H{handle}): {name}")
         }
         fst_sys::fstHierType_FST_HT_ATTRBEGIN => unsafe { fst_sys_parse_attribute(&entry.u.attr) },
-        fst_sys::fstHierType_FST_HT_ATTREND => {
-            format!("EndAttr")
-        }
+        fst_sys::fstHierType_FST_HT_ATTREND => "EndAttr".to_string(),
         other => todo!("htype={other}"),
     }
 }
@@ -145,10 +133,10 @@ fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
             tpe,
             component,
         } => format!("Scope: {name} ({}) {component}", hierarchy_tpe_to_str(tpe)),
-        FstHierarchyEntry::UpScope => format!("UpScope"),
+        FstHierarchyEntry::UpScope => "UpScope".to_string(),
         FstHierarchyEntry::Var { name, handle, .. } => format!("({handle}): {name}"),
         FstHierarchyEntry::AttributeBegin { name } => format!("BeginAttr: {name}"),
-        FstHierarchyEntry::AttributeEnd => format!("EndAttr"),
+        FstHierarchyEntry::AttributeEnd => "EndAttr".to_string(),
         FstHierarchyEntry::PathName { name, id } => format!("PathName: {id} -> {name}"),
         FstHierarchyEntry::SourceStem {
             is_instantiation,
@@ -243,7 +231,7 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
     let exp_handle = unsafe { fst_sys::fstReaderOpen(c_path.as_ptr()) };
 
     // open file with our library
-    let our_f = File::open(filename).expect(&format!("Failed to open {}", filename));
+    let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
     let mut our_reader = FstReader::open(our_f).unwrap();
 
     // compare header

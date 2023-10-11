@@ -42,6 +42,167 @@ where
     (closure as *mut F as *mut c_void, trampoline::<F>)
 }
 
+fn fst_sys_load_hierarchy(handle: *mut c_void) -> VecDeque<String> {
+    let mut out = VecDeque::new();
+    unsafe { fst_sys::fstReaderIterateHierRewind(handle) };
+    loop {
+        let p = unsafe {
+            let ptr = fst_sys::fstReaderIterateHier(handle);
+            if ptr.is_null() {
+                None
+            } else {
+                Some(&*ptr)
+            }
+        };
+        if p.is_none() {
+            break;
+        }
+        let value = p.unwrap();
+        out.push_back(fst_sys_hierarchy_to_str(value));
+    }
+    out
+}
+
+unsafe fn fst_sys_hierarchy_read_name(ptr: *const c_char, len: u32) -> String {
+    let slic = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+    (std::str::from_utf8(slic)).unwrap().to_string()
+}
+
+fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
+    let con = match tpe {
+        fst_sys::fstScopeType_FST_ST_VCD_MODULE => "Module",
+        other => todo!("scope type: {other}"),
+    };
+    con.to_string()
+}
+
+fn fst_attribute_tpe_to_string(tpe: fst_sys::fstAttrType) -> String {
+    let con = match tpe {
+        fst_sys::fstAttrType_FST_AT_MISC => "Misc",
+        other => todo!("scope type: {other}"),
+    };
+    con.to_string()
+}
+
+unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) -> String {
+    let name = fst_sys_hierarchy_read_name(attr.name, attr.name_length);
+    match attr.typ as fst_sys::fstAttrType {
+        fst_sys::fstAttrType_FST_AT_MISC => {
+            let misc_tpe = attr.subtype as fst_sys::fstMiscType;
+            match misc_tpe {
+                fst_sys::fstMiscType_FST_MT_PATHNAME => {
+                    let id = attr.arg;
+                    format!("PathName: {id} -> {name}")
+                }
+                fst_sys::fstMiscType_FST_MT_SOURCEISTEM
+                | fst_sys::fstMiscType_FST_MT_SOURCESTEM => {
+                    let line = attr.arg;
+                    let path_id = leb128::read::unsigned(&mut name.as_bytes()).unwrap();
+                    let is_instantiation = misc_tpe == fst_sys::fstMiscType_FST_MT_SOURCEISTEM;
+                    format!("SourceStem:: {is_instantiation}, {path_id}, {line}")
+                }
+                other => todo!("misc attribute of subtype {other}"),
+            }
+        }
+        other => format!("BeginAttr: {name}"),
+    }
+}
+
+fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
+    match entry.htyp as u32 {
+        fst_sys::fstHierType_FST_HT_SCOPE => {
+            let name = unsafe {
+                fst_sys_hierarchy_read_name(entry.u.scope.name, entry.u.scope.name_length)
+            };
+            let component = unsafe {
+                fst_sys_hierarchy_read_name(entry.u.scope.component, entry.u.scope.component_length)
+            };
+            let tpe =
+                unsafe { fst_sys_scope_tpe_to_string(entry.u.scope.typ as fst_sys::fstScopeType) };
+            format!("Scope: {name} ({tpe}) {component}")
+        }
+        fst_sys::fstHierType_FST_HT_UPSCOPE => {
+            format!("UpScope")
+        }
+        fst_sys::fstHierType_FST_HT_VAR => {
+            let handle = unsafe { entry.u.var.handle };
+            let name =
+                unsafe { fst_sys_hierarchy_read_name(entry.u.var.name, entry.u.var.name_length) };
+            format!("(H{handle}): {name}")
+        }
+        fst_sys::fstHierType_FST_HT_ATTRBEGIN => unsafe { fst_sys_parse_attribute(&entry.u.attr) },
+        fst_sys::fstHierType_FST_HT_ATTREND => {
+            format!("EndAttr")
+        }
+        other => todo!("htype={other}"),
+    }
+}
+
+fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
+    match entry {
+        FstHierarchyEntry::Scope {
+            name,
+            tpe,
+            component,
+        } => format!("Scope: {name} ({}) {component}", hierarchy_tpe_to_str(tpe)),
+        FstHierarchyEntry::UpScope => format!("UpScope"),
+        FstHierarchyEntry::Var { name, handle, .. } => format!("({handle}): {name}"),
+        FstHierarchyEntry::AttributeBegin { name } => format!("BeginAttr: {name}"),
+        FstHierarchyEntry::AttributeEnd => format!("EndAttr"),
+        FstHierarchyEntry::PathName { name, id } => format!("PathName: {id} -> {name}"),
+        FstHierarchyEntry::SourceStem {
+            is_instantiation,
+            path_id,
+            line,
+        } => format!("SourceStem:: {is_instantiation}, {path_id}, {line}"),
+    }
+}
+
+fn hierarchy_tpe_to_str(tpe: &FstScopeType) -> String {
+    let con = match tpe {
+        FstScopeType::Module => "Module",
+        FstScopeType::Task => "Task",
+        FstScopeType::Function => "Function",
+        FstScopeType::Begin => "Begin",
+        FstScopeType::Fork => "Fork",
+        FstScopeType::Generate => "Generate",
+        FstScopeType::Struct => "Struct",
+        FstScopeType::Union => "Union",
+        FstScopeType::Class => "Class",
+        FstScopeType::Interface => "Interface",
+        FstScopeType::Package => "Package",
+        FstScopeType::Program => "Program",
+        FstScopeType::VhdlArchitecture => "VhdlArchitecture",
+        FstScopeType::VhdlProcedure => "VhdlProcedure",
+        FstScopeType::VhdlFunction => "VhdlFunction",
+        FstScopeType::VhdlRecord => "VhdlRecord",
+        FstScopeType::VhdlProcess => "VhdlProcess",
+        FstScopeType::VhdlBlock => "VhdlBlock",
+        FstScopeType::VhdlForGenerate => "VhdlForGenerate",
+        FstScopeType::VhdlIfGenerate => "VhdlIfGenerate",
+        FstScopeType::VhdlGenerate => "VhdlGenerate",
+        FstScopeType::VhdlPackage => "VhdlPackage",
+        FstScopeType::AttributeBegin => "AttributeBegin",
+        FstScopeType::AttributeEnd => "AttributeEnd",
+        FstScopeType::VcdScope => "VcdScope",
+        FstScopeType::VcdUpScope => "VcdUpScope",
+    };
+    con.to_string()
+}
+
+fn diff_hierarchy<R: std::io::Read + std::io::Seek>(
+    our_reader: &mut FstReader<R>,
+    mut exp_hierarchy: VecDeque<String>,
+) {
+    let check = |entry: FstHierarchyEntry| {
+        let expected = exp_hierarchy.pop_front().unwrap();
+        let actual = hierarchy_to_str(&entry);
+        assert_eq!(actual, expected);
+        // println!("{actual:?}");
+    };
+    our_reader.read_hierarchy(check).unwrap();
+}
+
 fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
     let mut out = VecDeque::new();
     let mut f = |time: u64, handle: fst_sys::fstHandle, value: *const c_uchar| {
@@ -89,6 +250,10 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
     let exp_header = fst_sys_load_header(exp_handle);
     let our_header = our_reader.get_header();
     assert_eq!(our_header, exp_header);
+
+    // compare hierarchy
+    let exp_hierarchy = fst_sys_load_hierarchy(exp_handle);
+    diff_hierarchy(&mut our_reader, exp_hierarchy);
 
     // compare signals
     let exp_signals = fst_sys_load_signals(exp_handle);

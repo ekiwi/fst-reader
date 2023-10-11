@@ -18,3 +18,5 @@ tempfile = "3"
 
 [dev-dependencies]
 fst-sys = "0.2.0"
+leb128 = "0.2.5"
+

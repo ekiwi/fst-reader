@@ -4,6 +4,7 @@
 
 use bitvec::prelude::{BitVec, Msb0};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::cmp::Ordering;
 use std::fmt::Formatter;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU32;
@@ -196,7 +197,7 @@ fn uncompress_gzip_wrapper(
     if block_tpe != BlockType::GZipWrapper {
         // no gzip wrapper
         input.seek(SeekFrom::Start(0))?;
-        return Ok(None);
+        Ok(None)
     } else {
         // uncompress
         let section_length = read_u64(input)?;
@@ -214,7 +215,7 @@ fn uncompress_gzip_wrapper(
             let read_len = std::cmp::min(buf.len(), remaining);
             remaining -= read_len;
             decoder.read_exact(&mut buf[..read_len])?;
-            target.write(&mut buf[..read_len])?;
+            target.write_all(&buf[..read_len])?;
         }
         // go to start of new file and return
         target.seek(SeekFrom::Start(0))?;
@@ -353,7 +354,7 @@ enum MiscType {
     Unknown = 8,
 }
 
-const DOUBLE_ENDIAN_TEST: f64 = 2.7182818284590452354;
+const DOUBLE_ENDIAN_TEST: f64 = std::f64::consts::E;
 
 #[derive(Debug)]
 struct Header {
@@ -843,15 +844,13 @@ impl<R: Read + Seek> HeaderReader<R> {
         loop {
             let block_tpe = match read_block_tpe(&mut self.input) {
                 Err(ReaderError {
-                    kind: ReaderErrorKind::IO(e),
+                    kind: ReaderErrorKind::IO(_),
                 }) => {
-                    //println!("{e:?}");
                     break;
                 }
                 Err(other) => return Err(other),
                 Ok(tpe) => tpe,
             };
-            // println!("{block_tpe:?}");
             match block_tpe {
                 BlockType::Header => self.read_header()?,
                 BlockType::VcData => self.read_data(&block_tpe)?,
@@ -1114,6 +1113,13 @@ fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Result<usize> 
     Ok((vli >> 1) as usize)
 }
 
+#[inline]
+fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
+    for _ in 0..zeros {
+        chain_table.push(0);
+    }
+}
+
 impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R, F> {
     fn read_time_block(
         &mut self,
@@ -1227,31 +1233,33 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             let kind = chain_bytes[0];
             if (kind & 1) == 1 {
                 let shval = read_variant_i64(&mut chain_bytes)? >> 1;
-                if shval > 0 {
-                    value += shval;
-                    match chain_table.last() {
-                        None => {} // this is the first iteration
-                        Some(last_value) => {
-                            let len = (value - last_value) as u32;
-                            chain_table_lengths[prev_idx] = len;
-                        }
-                    };
-                    prev_idx = idx;
-                    chain_table.push(value);
-                } else if shval < 0 {
-                    chain_table.push(0);
-                    prev_alias = shval as u32;
-                    chain_table_lengths[idx] = prev_alias;
-                } else {
-                    chain_table.push(0);
-                    chain_table_lengths[idx] = prev_alias;
+                match shval.cmp(&0) {
+                    Ordering::Greater => {
+                        value += shval;
+                        match chain_table.last() {
+                            None => {} // this is the first iteration
+                            Some(last_value) => {
+                                let len = (value - last_value) as u32;
+                                chain_table_lengths[prev_idx] = len;
+                            }
+                        };
+                        prev_idx = idx;
+                        chain_table.push(value);
+                    }
+                    Ordering::Less => {
+                        chain_table.push(0);
+                        prev_alias = shval as u32;
+                        chain_table_lengths[idx] = prev_alias;
+                    }
+                    Ordering::Equal => {
+                        chain_table.push(0);
+                        chain_table_lengths[idx] = prev_alias;
+                    }
                 }
             } else {
                 let (value, _) = read_variant_u32(&mut chain_bytes)?;
                 let zeros = value >> 1;
-                for _ in 0..zeros {
-                    chain_table.push(0);
-                }
+                push_zeros(&mut chain_table, zeros);
             }
         }
 
@@ -1283,9 +1291,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                 prev_idx = idx; // only take non-alias signals into account
             } else {
                 let zeros = raw_val >> 1;
-                for _ in 0..zeros {
-                    chain_table.push(0);
-                }
+                push_zeros(&mut chain_table, zeros);
             }
         }
 

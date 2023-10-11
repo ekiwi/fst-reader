@@ -408,6 +408,9 @@ impl FstSignalHandle {
     fn from_index(index: usize) -> Self {
         FstSignalHandle(NonZeroU32::new((index as u32) + 1).unwrap())
     }
+    pub fn get_index(&self) -> usize {
+        (self.0.get() - 1) as usize
+    }
 }
 
 impl std::fmt::Display for FstSignalHandle {

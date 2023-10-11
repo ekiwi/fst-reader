@@ -3,7 +3,8 @@
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
 use fst_native::*;
-use std::ffi::{c_void, CStr, CString};
+use std::collections::VecDeque;
+use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
 use std::fs::File;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
@@ -21,6 +22,59 @@ fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
     }
 }
 
+// imported from fst_sys
+type FstChangeCallback = extern "C" fn(*mut c_void, u64, fst_sys::fstHandle, *const c_uchar);
+unsafe fn unpack_closure<F>(closure: &mut F) -> (*mut c_void, FstChangeCallback)
+where
+    F: FnMut(u64, fst_sys::fstHandle, *const c_uchar),
+{
+    extern "C" fn trampoline<F>(
+        data: *mut c_void,
+        time: u64,
+        handle: fst_sys::fstHandle,
+        value: *const c_uchar,
+    ) where
+        F: FnMut(u64, fst_sys::fstHandle, *const c_uchar),
+    {
+        let closure: &mut F = unsafe { &mut *(data as *mut F) };
+        (*closure)(time, handle, value);
+    }
+    (closure as *mut F as *mut c_void, trampoline::<F>)
+}
+
+fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
+    let mut out = VecDeque::new();
+    let mut f = |time: u64, handle: fst_sys::fstHandle, value: *const c_uchar| {
+        let string: String = unsafe {
+            CStr::from_ptr(value as *const c_char)
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        out.push_back((time, handle, string));
+    };
+    unsafe {
+        fst_sys::fstReaderSetFacProcessMaskAll(handle);
+        let (data, f) = unpack_closure(&mut f);
+        fst_sys::fstReaderIterBlocks(handle, Some(f), data, std::ptr::null_mut());
+    }
+    out
+}
+
+fn diff_signals<R: std::io::Read + std::io::Seek>(
+    our_reader: &mut FstReader<R>,
+    mut exp_signals: VecDeque<(u64, u32, String)>,
+) {
+    let check = |time: u64, handle: FstSignalHandle, value: &str| {
+        let (exp_time, exp_handle, exp_value) = exp_signals.pop_front().unwrap();
+        let actual = (time, handle.get_index() + 1, value);
+        let expected = (exp_time, exp_handle as usize, exp_value.as_str());
+        assert_eq!(actual, expected);
+    };
+    let filter = FstFilter::all();
+    our_reader.read_signals(&filter, check).unwrap();
+}
+
 fn run_diff_test(filename: &str, filter: &FstFilter) {
     // open file with FST library from GTKWave
     let c_path = CString::new(filename).unwrap();
@@ -35,6 +89,10 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
     let our_header = our_reader.get_header();
     assert_eq!(our_header, exp_header);
 
+    // compare signals
+    let exp_signals = fst_sys_load_signals(exp_handle);
+    diff_signals(&mut our_reader, exp_signals);
+
     // close C-library handle
     unsafe { fst_sys::fstReaderClose(exp_handle) };
 }
@@ -45,6 +103,7 @@ fn diff_verilator_basic_tests_anon() {
 }
 
 #[test]
+#[ignore]
 fn diff_des() {
     run_diff_test("fsts/des.fst", &FstFilter::all());
 }

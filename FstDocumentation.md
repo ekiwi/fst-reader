@@ -94,7 +94,7 @@ iVerilog uses the `fstWriter` API from [`vpi/sys_fst.c`](https://github.com/stev
 
 ### GHDL
 
-iVerilog uses the `fstWriter` API from [`src/grt/grt-fst.adb`](https://github.com/ghdl/ghdl/blob/b67ace3f4553e5072fb51d1de637e483cf56342a/src/grt/grt-fst.adb)
+GHDL uses the `fstWriter` API from [`src/grt/grt-fst.adb`](https://github.com/ghdl/ghdl/blob/b67ace3f4553e5072fb51d1de637e483cf56342a/src/grt/grt-fst.adb)
 
 **Waveform**
 - `fstWriterEmitValueChange`
@@ -113,6 +113,30 @@ iVerilog uses the `fstWriter` API from [`src/grt/grt-fst.adb`](https://github.co
 - `fstWriterCreateVar2`
 - `fstWriterSetSourceInstantiationStem`
 - `fstWriterSetSourceStem`
+- `fstWriterSetScope`
+- `fstWriterSetUpscope`
+
+**Open / Close**
+- `fstWriterClose`
+- `fstWriterCreate`
+
+### Yosys
+
+Yosys uses the `fstWriter` API from [`passes/sat/sim.cc`](https://github.com/YosysHQ/yosys/blob/417871e8319dbfbc27dabf0512c4dbd9fb9bf07d/passes/sat/sim.cc)
+
+**Waveform**
+- `fstWriterEmitValueChange`
+- `fstWriterEmitTimeChange`
+
+**Header / Meta-Data**
+- `fstWriterSetDate`
+- `fstWriterSetVersion`
+- `fstWriterSetTimescaleFromString`
+- `fstWriterSetPackType(..., FST_WR_PT_FASTLZ)`
+- `fstWriterSetRepackOnClose(..., 1)`
+
+**Hierarchy**
+- `fstWriterCreateVar`
 - `fstWriterSetScope`
 - `fstWriterSetUpscope`
 

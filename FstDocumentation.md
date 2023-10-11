@@ -143,3 +143,25 @@ Yosys uses the `fstWriter` API from [`passes/sat/sim.cc`](https://github.com/Yos
 **Open / Close**
 - `fstWriterClose`
 - `fstWriterCreate`
+
+
+Yosys uses the `fstReader` API from [`kernel/fstdata.cc`](https://github.com/YosysHQ/yosys/blob/417871e8319dbfbc27dabf0512c4dbd9fb9bf07d/kernel/fstdata.cc)
+
+**Waveform**
+- `fstReaderIterBlocks2`
+- `fstReaderSetUnlimitedTimeRange`
+- `fstReaderSetFacProcessMaskAll`
+
+**Header / Meta-Data**
+- `fstReaderGetTimescale`
+- `fstReaderGetStartTime`
+- `fstReaderGetEndTime`
+
+**Hierarchy**
+- `fstReaderIterateHier`
+- `fstReaderPushScope`
+- `fstReaderPopScope`
+
+**Open / Close**
+- `fstReaderOpen`
+- `fstReaderClose`

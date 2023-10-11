@@ -8,7 +8,61 @@ Available documentation:
 
 ## FST API-Usage Study
 
-### iVerilog Usage
+### Verilator
+
+Verilator uses the `fstWriter` API from [`include/verilated_fst_c.cpp`](https://github.com/verilator/verilator/blob/bd4eede6b47bc894f73ba6151f2ffe63db8feb3d/include/verilated_fst_c.cpp)
+
+**Waveform**
+- `fstWriterEmitValueChange`
+- `fstWriterEmitTimeChange`
+- `fstWriterFlushContext`
+
+**Header / Meta-Data**
+- `fstWriterSetTimescaleFromString`
+- `fstWriterSetPackType(..., FST_WR_PT_LZ4)`
+- `fstWriterSetParallelMode(..., 1)` (_optional_)
+
+**Hierarchy**
+- `fstWriterCreateVar`
+- `fstWriterSetScope`
+- `fstWriterSetUpscope`
+- `fstWriterCreateEnumTable`
+- `fstWriterEmitEnumTableRef`
+
+**Open / Close**
+- `fstWriterClose`
+- `fstWriterCreate`
+
+#### Variable Types / Direction
+
+Information from [`verilator/src/V3EmitCImp.cpp`](https://github.com/verilator/verilator/blob/bd4eede6b47bc894f73ba6151f2ffe63db8feb3d/src/V3EmitCImp.cpp#L674)
+
+**Types**
+- `FST_VT_VCD_REAL_PARAMETER`
+- `FST_VT_VCD_REAL`
+- `FST_VT_VCD_PARAMETER`
+- `FST_VT_VCD_SUPPLY0`
+- `FST_VT_VCD_SUPPLY1`
+- `FST_VT_VCD_TRI0`
+- `FST_VT_VCD_TRI1`
+- `FST_VT_VCD_TRI`
+- `FST_VT_VCD_WIRE`
+- `FST_VT_VCD_INTEGER`
+- `FST_VT_SV_BIT`
+- `FST_VT_SV_LOGIC`
+- `FST_VT_SV_INT`
+- `FST_VT_SV_SHORTINT`
+- `FST_VT_SV_LONGINT`
+- `FST_VT_SV_BYTE`
+- `FST_VT_VCD_EVENT`
+
+**Direction**
+- `FST_VD_INOUT`
+- `FST_VD_OUTPUT`
+- `FST_VD_INPUT`
+- `FST_VD_IMPLICIT`
+
+### iVerilog
 
 iVerilog uses the `fstWriter` API from [`vpi/sys_fst.c`](https://github.com/steveicarus/iverilog/blob/c498d53d0d6565ec607e5cc472c1d58f58810d52/vpi/sys_fst.c)
 
@@ -24,8 +78,8 @@ iVerilog uses the `fstWriter` API from [`vpi/sys_fst.c`](https://github.com/stev
 - `fstWriterSetDate`
 - `fstWriterSetVersion`
 - `fstWriterSetTimescaleFromString`
-- `fstWriterSetPackType(..., 1)` (`FST_WR_PT_FASTLZ = 1`)
-- `fstWriterSetRepackOnClose(..., 1)` creates a GZip wrapper
+- `fstWriterSetPackType(..., 1)` (`FST_WR_PT_FASTLZ = 1`) (_optional_)
+- `fstWriterSetRepackOnClose(..., 1)` (_optional_)
 - 
 
 **Hierarchy**

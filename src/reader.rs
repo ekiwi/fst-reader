@@ -357,6 +357,7 @@ enum MiscType {
 const DOUBLE_ENDIAN_TEST: f64 = std::f64::consts::E;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Header {
     start_time: u64,
     end_time: u64,

@@ -80,7 +80,6 @@ iVerilog uses the `fstWriter` API from [`vpi/sys_fst.c`](https://github.com/stev
 - `fstWriterSetTimescaleFromString`
 - `fstWriterSetPackType(..., 1)` (`FST_WR_PT_FASTLZ = 1`) (_optional_)
 - `fstWriterSetRepackOnClose(..., 1)` (_optional_)
-- 
 
 **Hierarchy**
 - `fstWriterCreateVar`
@@ -89,7 +88,34 @@ iVerilog uses the `fstWriter` API from [`vpi/sys_fst.c`](https://github.com/stev
 - `fstWriterSetScope`
 - `fstWriterSetUpscope`
 
-**Open / Close** 
+**Open / Close**
+- `fstWriterClose`
+- `fstWriterCreate`
 
+### GHDL
+
+iVerilog uses the `fstWriter` API from [`src/grt/grt-fst.adb`](https://github.com/ghdl/ghdl/blob/b67ace3f4553e5072fb51d1de637e483cf56342a/src/grt/grt-fst.adb)
+
+**Waveform**
+- `fstWriterEmitValueChange`
+- `fstWriterEmitVariableLengthValueChange`
+- `fstWriterEmitTimeChange`
+
+**Header / Meta-Data**
+- `fstWriterSetVersion`
+- `fstWriterSetTimescale`
+- `fstWriterSetPackType(..., FST_WR_PT_LZ4)`
+- `fstWriterSetRepackOnClose(..., 1)`
+- `fstWriterSetFileType(..., FST_FT_VHDL)`
+- `fstWriterSetParallelMode(..., 0)`
+
+**Hierarchy**
+- `fstWriterCreateVar2`
+- `fstWriterSetSourceInstantiationStem`
+- `fstWriterSetSourceStem`
+- `fstWriterSetScope`
+- `fstWriterSetUpscope`
+
+**Open / Close**
 - `fstWriterClose`
 - `fstWriterCreate`

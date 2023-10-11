@@ -1254,20 +1254,17 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
             let idx = chain_table.len();
             if raw_val == 0 {
-                chain_table.push(0);
+                chain_table.push(0); // alias
                 let (len, _) = read_variant_u32(&mut chain_bytes)?;
                 chain_table_lengths[idx] = (-(len as i64)) as u32;
             } else if (raw_val & 1) == 1 {
                 value += (raw_val as i64) >> 1;
-                match chain_table.last() {
-                    None => {} // this is the first iteration
-                    Some(last_value) => {
-                        let len = (value - last_value) as u32;
-                        chain_table_lengths[prev_idx] = len;
-                    }
-                };
+                if idx > 0 {
+                    let len = (value - chain_table[prev_idx]) as u32;
+                    chain_table_lengths[prev_idx] = len;
+                }
                 chain_table.push(value);
-                prev_idx = idx;
+                prev_idx = idx; // only take non-alias signals into account
             } else {
                 let zeros = raw_val >> 1;
                 for _ in 0..zeros {

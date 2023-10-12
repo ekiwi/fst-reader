@@ -418,6 +418,7 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn test_read_variant_i64() {
@@ -460,26 +461,18 @@ mod tests {
         );
     }
 
+    proptest! {
     #[test]
-    fn test_read_write_header() {
-        let header = Header {
-            start_time: 13478,
-            end_time: 12374738694,
-            memory_used_by_writer: 59374829374,
-            scope_count: 47321896453468,
-            var_count: 4671823496,
-            max_var_id_code: 4328947203984,
-            vc_section_count: 324782364783264,
-            timescale_exponent: -5,
-            version: "brh2u39   - --  ÖÖÖÄÄr273g4923g4".to_string(),
-            date: "123ß25434ß434324-----32421".to_string(),
-            file_type: FileType::Verilog,
-            time_zero: 123,
-        };
+    fn test_read_write_header(header: Header) {
+        // return early if the header strings are too long
+        if header.version.len() > HEADER_VERSION_MAX_LEN || header.date.len() > HEADER_DATE_MAX_LEN {
+            return
+        }
         let mut buf = [0u8; 512];
         write_header(&mut buf.as_mut(), &header).unwrap();
         let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
         assert_eq!(endian, FloatingPointEndian::Little);
         assert_eq!(actual_header, header);
+    }
     }
 }

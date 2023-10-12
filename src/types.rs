@@ -6,6 +6,8 @@
 use bitvec::order::Msb0;
 use bitvec::prelude::BitVec;
 use num_enum::TryFromPrimitive;
+#[cfg(test)]
+use proptest_derive::Arbitrary;
 use std::fmt::Formatter;
 use std::num::NonZeroU32;
 
@@ -44,6 +46,7 @@ pub(crate) enum FloatingPointEndian {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub(crate) enum FileType {
     Verilog = 0,
     Vhdl = 1,
@@ -175,6 +178,7 @@ pub(crate) enum MiscType {
 pub(crate) const DOUBLE_ENDIAN_TEST: f64 = std::f64::consts::E;
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
 #[allow(dead_code)]
 pub(crate) struct Header {
     pub(crate) start_time: u64,

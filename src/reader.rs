@@ -127,7 +127,7 @@ impl<R: Read + Seek> FstReader<R> {
         callback: impl FnMut(u64, FstSignalHandle, &str),
     ) -> Result<()> {
         // convert user filters
-        let signal_count = self.meta.signals.types.len();
+        let signal_count = self.meta.signals.len();
         let signal_mask = if let Some(signals) = &filter.include {
             let mut signal_mask = BitMask::repeat(false, signal_count);
             for sig in signals {
@@ -226,7 +226,7 @@ fn uncompress_gzip_wrapper(
 #[derive(Debug)]
 struct MetaData {
     header: Header,
-    signals: Signals,
+    signals: Vec<SignalInfo>,
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
     hierarchy_compression: HierarchyCompression,
@@ -238,7 +238,7 @@ pub type Result<T> = std::result::Result<T, ReaderError>;
 struct HeaderReader<R: Read + Seek> {
     input: R,
     header: Option<Header>,
-    signals: Option<Signals>,
+    signals: Option<Vec<SignalInfo>>,
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
     hierarchy: Option<(HierarchyCompression, u64)>,
@@ -288,46 +288,13 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn read_geometry(&mut self) -> Result<()> {
-        let section_length = read_u64(&mut self.input)?;
         // skip this section if the header is not complete
         if self.header_incomplete() {
+            let section_length = read_u64(&mut self.input)?;
             self.skip(section_length, 8)?;
-            return Ok(());
+        } else {
+            self.signals = Some(read_geometry(&mut self.input)?);
         }
-
-        let uncompressed_length = read_u64(&mut self.input)?;
-        let max_handle = read_u64(&mut self.input)?;
-        let compressed_length = section_length - 3 * 8;
-
-        let bytes = read_compressed_bytes(
-            &mut self.input,
-            uncompressed_length,
-            compressed_length,
-            true,
-        )?;
-
-        let mut longest_signal_value_len = 32;
-        let mut lengths: Vec<u32> = Vec::with_capacity(max_handle as usize);
-        let mut types: Vec<FstVarType> = Vec::with_capacity(max_handle as usize);
-        let mut byte_reader: &[u8] = &bytes;
-
-        for _ii in 0..max_handle {
-            let (value, _) = read_variant_u32(&mut byte_reader)?;
-            let (length, tpe) = if value == 0 {
-                (8, FstVarType::Real)
-            } else {
-                let length = if value != 0xFFFFFFFFu32 { value } else { 0 };
-                if length > longest_signal_value_len {
-                    // TODO: is this code ever run?
-                    longest_signal_value_len = length;
-                }
-                (length, FstVarType::Wire)
-            };
-            lengths.push(length);
-            types.push(tpe);
-        }
-        self.signals = Some(Signals { lengths, types });
-
         Ok(())
     }
 
@@ -602,15 +569,14 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
 
         let mut byte_reader: &[u8] = &bytes;
         for idx in 0..(max_handle as usize) {
-            let signal_length = self.meta.signals.lengths[idx];
+            let signal_length = self.meta.signals[idx].len();
             if self.filter.signals[idx] {
                 let signal_handle = FstSignalHandle::from_index(idx);
                 // we do not support a "process_mask" for now, will read all signals
                 match signal_length {
                     0 => {} // ignore since variable-length records have no initial value
                     len => {
-                        let tpe = self.meta.signals.types[idx];
-                        if tpe != FstVarType::Real {
+                        if !self.meta.signals[idx].is_real() {
                             let value = read_bytes(&mut byte_reader, len as usize)?;
                             (self.callback)(
                                 start_time,
@@ -840,7 +806,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     let mut bytes = self.read_packed_values(*length, packtpe)?;
 
                     // read first time delta
-                    let len = self.meta.signals.lengths[signal_idx];
+                    let len = self.meta.signals[signal_idx].len();
                     let tdelta = if len == 1 {
                         read_one_bit_signal_time_delta(&bytes, 0)?
                     } else {
@@ -876,7 +842,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                 let signal_id = (tc_head[time_id] - 1) as usize; // convert handle to index
                 let mut mu_slice = &mu.as_slice()[head_pointer[signal_id] as usize..];
                 let (vli, skiplen) = read_variant_u32(&mut mu_slice)?;
-                let signal_len = self.meta.signals.lengths[signal_id];
+                let signal_len = self.meta.signals[signal_id].len();
                 let signal_handle = FstSignalHandle::from_index(signal_id);
                 let len = match signal_len {
                     1 => {
@@ -890,9 +856,8 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                         todo!("variable length signal support! {len} {skiplen2}")
                     }
                     len => {
-                        let tpe = self.meta.signals.types[signal_id];
                         let signal_len = len as usize;
-                        if tpe != FstVarType::Real {
+                        if !self.meta.signals[signal_id].is_real() {
                             let (value, len) = if (vli & 1) == 0 {
                                 // if bit0 is zero -> 2-state
                                 let read_len = int_div_ceil(signal_len, 8);

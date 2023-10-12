@@ -274,24 +274,6 @@ pub(crate) fn read_bytes(input: &mut impl Read, len: usize) -> ReadResult<Vec<u8
     Ok(buf)
 }
 
-#[inline]
-pub(crate) fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> ReadResult<f64> {
-    let mut buf = [0u8; 8];
-    input.read_exact(&mut buf)?;
-    match endian {
-        FloatingPointEndian::Little => Ok(f64::from_le_bytes(buf)),
-        FloatingPointEndian::Big => Ok(f64::from_be_bytes(buf)),
-    }
-}
-
-#[inline]
-fn write_f64(output: &mut impl Write, value: f64) -> WriteResult<()> {
-    // for f64, we have the option to use either LE or BE, we just need to be consistent
-    let buf = value.to_le_bytes();
-    output.write_all(&buf)?;
-    Ok(())
-}
-
 pub(crate) fn read_block_tpe(input: &mut impl Read) -> ReadResult<BlockType> {
     Ok(BlockType::try_from(read_u8(input)?)?)
 }
@@ -313,6 +295,24 @@ pub(crate) fn determine_f64_endian(
     } else {
         todo!("should not get here")
     }
+}
+
+#[inline]
+pub(crate) fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> ReadResult<f64> {
+    let mut buf = [0u8; 8];
+    input.read_exact(&mut buf)?;
+    match endian {
+        FloatingPointEndian::Little => Ok(f64::from_le_bytes(buf)),
+        FloatingPointEndian::Big => Ok(f64::from_be_bytes(buf)),
+    }
+}
+
+#[inline]
+fn write_f64(output: &mut impl Write, value: f64) -> WriteResult<()> {
+    // for f64, we have the option to use either LE or BE, we just need to be consistent
+    let buf = value.to_le_bytes();
+    output.write_all(&buf)?;
+    Ok(())
 }
 
 const HEADER_LENGTH: u64 = 329;
@@ -369,6 +369,24 @@ pub(crate) fn write_header(output: &mut impl Write, header: &Header) -> WriteRes
     write_u8(output, header.file_type as u8)?;
     write_u64(output, header.time_zero)?;
     Ok(())
+}
+
+pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<SignalInfo>> {
+    let section_length = read_u64(input)?;
+    let uncompressed_length = read_u64(input)?;
+    let max_handle = read_u64(input)?;
+    let compressed_length = section_length - 3 * 8;
+
+    let bytes = read_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+
+    let mut signals: Vec<SignalInfo> = Vec::with_capacity(max_handle as usize);
+    let mut byte_reader: &[u8] = &bytes;
+
+    for _ii in 0..max_handle {
+        let (value, _) = read_variant_u32(&mut byte_reader)?;
+        signals.push(SignalInfo::from_file_format(value));
+    }
+    Ok(signals)
 }
 
 #[cfg(test)]

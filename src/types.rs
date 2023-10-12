@@ -192,10 +192,47 @@ pub(crate) struct Header {
 }
 
 #[derive(Debug)]
-pub(crate) struct Signals {
-    // called "geometry" in gtkwave
-    pub(crate) lengths: Vec<u32>,
-    pub(crate) types: Vec<FstVarType>,
+pub(crate) enum SignalInfo {
+    BitVec(NonZeroU32),
+    Real,
+}
+
+impl SignalInfo {
+    pub(crate) fn from_file_format(value: u32) -> Self {
+        if value == 0 {
+            SignalInfo::Real
+        } else if value != u32::MAX {
+            SignalInfo::BitVec(NonZeroU32::new(value + 1).unwrap())
+        } else {
+            SignalInfo::BitVec(NonZeroU32::new(1).unwrap())
+        }
+    }
+
+    pub(crate) fn to_file_format(&self) -> u32 {
+        match self {
+            SignalInfo::BitVec(value) => match value.get() {
+                1 => u32::MAX,
+                other => other - 1,
+            },
+            SignalInfo::Real => 0,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn len(&self) -> u32 {
+        match self {
+            SignalInfo::BitVec(value) => value.get() - 1,
+            SignalInfo::Real => 8,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_real(&self) -> bool {
+        match self {
+            SignalInfo::BitVec(_) => false,
+            SignalInfo::Real => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -286,5 +323,16 @@ impl DataSectionKind {
             BlockType::VcDataDynamicAlias2 => Some(DataSectionKind::DynamicAlias2),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sizes() {
+        // 1-bit to distinguish between real and bitvec + length
+        assert_eq!(std::mem::size_of::<SignalInfo>(), 4);
     }
 }

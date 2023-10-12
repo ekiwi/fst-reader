@@ -2,9 +2,10 @@
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
+mod io;
 mod reader;
+mod types;
 
-pub use reader::{
-    FstFilter, FstHeader, FstHierarchyEntry, FstReader, FstScopeType, FstSignalHandle,
-    FstVarDirection, FstVarType,
-};
+pub use reader::{FstFilter, FstHeader, FstReader};
+
+pub use types::{FstHierarchyEntry, FstScopeType, FstSignalHandle, FstVarDirection, FstVarType};

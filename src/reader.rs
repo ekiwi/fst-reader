@@ -357,8 +357,9 @@ impl<R: Read + Seek> HeaderReader<R> {
             };
             match block_tpe {
                 BlockType::Header => {
-                    let header = read_header(&mut self.input)?;
+                    let (header, endian) = read_header(&mut self.input)?;
                     self.header = Some(header);
+                    self.float_endian = endian;
                 }
                 BlockType::VcData => self.read_data(&block_tpe)?,
                 BlockType::VcDataDynamicAlias => self.read_data(&block_tpe)?,
@@ -980,34 +981,5 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_read_variant_i64() {
-        // a positive value from a real fst file (solution from gtkwave)
-        let in1 = [0x13];
-        assert_eq!(read_variant_i64(&mut in1.as_slice()).unwrap(), 19);
-        // a negative value from a real fst file (solution from gtkwave)
-        let in0 = [0x7b];
-        assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
-    }
-
-    #[test]
-    fn test_read_c_str_fixed_length() {
-        let input = [b'h', b'i', 0u8, b'x'];
-        assert_eq!(
-            read_c_str_fixed_length(&mut input.as_slice(), 4).unwrap(),
-            "hi"
-        );
-        let input2 = [b'h', b'i', b'i', 0u8, b'x'];
-        assert_eq!(
-            read_c_str_fixed_length(&mut input2.as_slice(), 5).unwrap(),
-            "hii"
-        );
     }
 }

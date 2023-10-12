@@ -5,7 +5,7 @@
 
 use crate::types::*;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
 pub enum ReaderErrorKind {
@@ -59,6 +59,8 @@ impl From<lz4_flex::block::DecompressError> for ReaderError {
 }
 
 pub type ReadResult<T> = std::result::Result<T, ReaderError>;
+
+pub type WriteResult<T> = std::result::Result<T, ReaderError>;
 
 #[inline]
 pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> {
@@ -128,10 +130,23 @@ pub(crate) fn read_u64(input: &mut impl Read) -> ReadResult<u64> {
 }
 
 #[inline]
+pub(crate) fn write_u64(output: &mut impl Write, value: u64) -> WriteResult<()> {
+    let buf = value.to_be_bytes();
+    output.write_all(&buf)?;
+    Ok(())
+}
+
+#[inline]
 pub(crate) fn read_u8(input: &mut impl Read) -> ReadResult<u8> {
     let mut buf = [0u8; 1];
     input.read_exact(&mut buf)?;
     Ok(buf[0])
+}
+
+fn write_u8(output: &mut impl Write, value: u8) -> WriteResult<()> {
+    let buf = value.to_be_bytes();
+    output.write_all(&buf)?;
+    Ok(())
 }
 
 #[inline]
@@ -139,6 +154,13 @@ pub(crate) fn read_i8(input: &mut impl Read) -> ReadResult<i8> {
     let mut buf = [0u8; 1];
     input.read_exact(&mut buf)?;
     Ok(i8::from_be_bytes(buf))
+}
+
+#[inline]
+fn write_i8(output: &mut impl Write, value: i8) -> WriteResult<()> {
+    let buf = value.to_be_bytes();
+    output.write_all(&buf)?;
+    Ok(())
 }
 
 pub(crate) fn read_c_str(input: &mut impl Read, max_len: usize) -> ReadResult<String> {
@@ -161,6 +183,22 @@ pub(crate) fn read_c_str_fixed_length(input: &mut impl Read, len: usize) -> Read
     let str_len = zero_index;
     bytes.truncate(str_len);
     Ok(String::from_utf8(bytes)?)
+}
+
+#[inline]
+fn write_c_str_fixed_length(
+    output: &mut impl Write,
+    value: &str,
+    max_len: usize,
+) -> WriteResult<()> {
+    let bytes = value.as_bytes();
+    if bytes.len() >= max_len {
+        todo!("Return error.")
+    }
+    output.write_all(&bytes)?;
+    let zeros = vec![0u8; max_len - bytes.len()];
+    output.write_all(&zeros)?;
+    Ok(())
 }
 
 const RCV_STR: [u8; 8] = [b'x', b'z', b'h', b'u', b'w', b'l', b'-', b'?'];
@@ -246,6 +284,14 @@ pub(crate) fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> Re
     }
 }
 
+#[inline]
+fn write_f64(output: &mut impl Write, value: f64) -> WriteResult<()> {
+    // for f64, we have the option to use either LE or BE, we just need to be consistent
+    let buf = value.to_le_bytes();
+    output.write_all(&buf)?;
+    Ok(())
+}
+
 pub(crate) fn read_block_tpe(input: &mut impl Read) -> ReadResult<BlockType> {
     Ok(BlockType::try_from(read_u8(input)?)?)
 }
@@ -269,9 +315,12 @@ pub(crate) fn determine_f64_endian(
     }
 }
 
-pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<Header> {
+const HEADER_LENGTH: u64 = 329;
+const HEADER_VERSION_MAX_LEN: usize = 128;
+const HEADER_DATE_MAX_LEN: usize = 119;
+pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<(Header, FloatingPointEndian)> {
     let section_length = read_u64(input)?;
-    assert_eq!(section_length, 329);
+    assert_eq!(section_length, HEADER_LENGTH);
     let start_time = read_u64(input)?;
     let end_time = read_u64(input)?;
     let float_endian = determine_f64_endian(input, DOUBLE_ENDIAN_TEST)?;
@@ -281,9 +330,9 @@ pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<Header> {
     let max_var_id_code = read_u64(input)?;
     let vc_section_count = read_u64(input)?;
     let timescale_exponent = read_i8(input)?;
-    let version = read_c_str_fixed_length(input, 128)?;
+    let version = read_c_str_fixed_length(input, HEADER_VERSION_MAX_LEN)?;
     // this size was reduced compared to what is documented in block_format.txt
-    let date = read_c_str_fixed_length(input, 119)?;
+    let date = read_c_str_fixed_length(input, HEADER_DATE_MAX_LEN)?;
     let file_type = FileType::try_from(read_u8(input)?)?;
     let time_zero = read_u64(input)?;
 
@@ -300,7 +349,93 @@ pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<Header> {
         date,
         file_type,
         time_zero,
-        float_endian,
     };
-    Ok(header)
+    Ok((header, float_endian))
+}
+
+pub(crate) fn write_header(output: &mut impl Write, header: &Header) -> WriteResult<()> {
+    write_u64(output, HEADER_LENGTH)?;
+    write_u64(output, header.start_time)?;
+    write_u64(output, header.end_time)?;
+    write_f64(output, DOUBLE_ENDIAN_TEST)?;
+    write_u64(output, header.memory_used_by_writer)?;
+    write_u64(output, header.scope_count)?;
+    write_u64(output, header.var_count)?;
+    write_u64(output, header.max_var_id_code)?;
+    write_u64(output, header.vc_section_count)?;
+    write_i8(output, header.timescale_exponent)?;
+    write_c_str_fixed_length(output, &header.version, HEADER_VERSION_MAX_LEN)?;
+    write_c_str_fixed_length(output, &header.date, HEADER_DATE_MAX_LEN)?;
+    write_u8(output, header.file_type as u8)?;
+    write_u64(output, header.time_zero)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_variant_i64() {
+        // a positive value from a real fst file (solution from gtkwave)
+        let in1 = [0x13];
+        assert_eq!(read_variant_i64(&mut in1.as_slice()).unwrap(), 19);
+        // a negative value from a real fst file (solution from gtkwave)
+        let in0 = [0x7b];
+        assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
+    }
+
+    #[test]
+    fn test_read_c_str_fixed_length() {
+        let input = [b'h', b'i', 0u8, b'x'];
+        assert_eq!(
+            read_c_str_fixed_length(&mut input.as_slice(), 4).unwrap(),
+            "hi"
+        );
+        let input2 = [b'h', b'i', b'i', 0u8, b'x'];
+        assert_eq!(
+            read_c_str_fixed_length(&mut input2.as_slice(), 5).unwrap(),
+            "hii"
+        );
+    }
+
+    #[test]
+    fn test_write_c_str_fixed_length() {
+        let mut buf = [0u8; 128];
+        write_c_str_fixed_length(&mut buf.as_mut(), "test", 100).unwrap();
+        assert_eq!(
+            read_c_str_fixed_length(&mut buf.as_slice(), 100).unwrap(),
+            "test"
+        );
+
+        let s2 = "hb42u9423yv324g2396v@#$----   23rf327845327";
+        write_c_str_fixed_length(&mut buf.as_mut(), s2, 100).unwrap();
+        assert_eq!(
+            read_c_str_fixed_length(&mut buf.as_slice(), 100).unwrap(),
+            s2
+        );
+    }
+
+    #[test]
+    fn test_read_write_header() {
+        let header = Header {
+            start_time: 13478,
+            end_time: 12374738694,
+            memory_used_by_writer: 59374829374,
+            scope_count: 47321896453468,
+            var_count: 4671823496,
+            max_var_id_code: 4328947203984,
+            vc_section_count: 324782364783264,
+            timescale_exponent: -5,
+            version: "brh2u39   - --  ÖÖÖÄÄr273g4923g4".to_string(),
+            date: "123ß25434ß434324-----32421".to_string(),
+            file_type: FileType::Verilog,
+            time_zero: 123,
+        };
+        let mut buf = [0u8; 512];
+        write_header(&mut buf.as_mut(), &header).unwrap();
+        let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
+        assert_eq!(endian, FloatingPointEndian::Little);
+        assert_eq!(actual_header, header);
+    }
 }

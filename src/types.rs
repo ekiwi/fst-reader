@@ -43,7 +43,7 @@ pub(crate) enum FloatingPointEndian {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 pub(crate) enum FileType {
     Verilog = 0,
     Vhdl = 1,
@@ -174,7 +174,7 @@ pub(crate) enum MiscType {
 
 pub(crate) const DOUBLE_ENDIAN_TEST: f64 = std::f64::consts::E;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 pub(crate) struct Header {
     pub(crate) start_time: u64,
@@ -189,7 +189,6 @@ pub(crate) struct Header {
     pub(crate) date: String,
     pub(crate) file_type: FileType,
     pub(crate) time_zero: u64,
-    pub(crate) float_endian: FloatingPointEndian,
 }
 
 #[derive(Debug)]

@@ -442,22 +442,20 @@ mod tests {
             "hii"
         );
     }
-
-    #[test]
-    fn test_write_c_str_fixed_length() {
-        let mut buf = [0u8; 128];
-        write_c_str_fixed_length(&mut buf.as_mut(), "test", 100).unwrap();
-        assert_eq!(
-            read_c_str_fixed_length(&mut buf.as_slice(), 100).unwrap(),
-            "test"
-        );
-
-        let s2 = "hb42u9423yv324g2396v@#$----   23rf327845327";
-        write_c_str_fixed_length(&mut buf.as_mut(), s2, 100).unwrap();
-        assert_eq!(
-            read_c_str_fixed_length(&mut buf.as_slice(), 100).unwrap(),
-            s2
-        );
+    proptest! {
+        #[test]
+        fn test_write_c_str_fixed_length(string: String, max_len in 1 .. 400usize) {
+            let string_bytes: &[u8] = string.as_bytes();
+            prop_assume!(string_bytes.len() < max_len);
+            prop_assume!(!string_bytes.contains(&0u8));
+            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+            write_c_str_fixed_length(&mut buf, &string, max_len).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            assert_eq!(
+                read_c_str_fixed_length(&mut buf, max_len).unwrap(),
+                string
+            );
+        }
     }
 
     proptest! {

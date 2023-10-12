@@ -258,7 +258,6 @@ pub(crate) fn read_compressed_bytes(
         d.read_to_end(&mut uncompressed)?;
         // sanity checks
         assert_eq!(d.total_out(), uncompressed_length);
-        assert!(d.total_in() <= compressed_length);
         // the decoder often reads more bytes than it should, we fix this here
         d.into_inner()
             .seek(SeekFrom::Start(start + compressed_length))?;
@@ -282,7 +281,7 @@ pub(crate) fn write_compressed_bytes(
     d.flush()?;
     assert_eq!(d.total_in() as usize, bytes.len());
     let compressed_written = d.total_out() as usize;
-    let output2 = d.flush_finish()?;
+    let output2 = d.finish()?;
     if !allow_uncompressed || compressed_written < bytes.len() {
         Ok(compressed_written)
     } else {
@@ -462,17 +461,32 @@ mod tests {
     }
 
     proptest! {
-    #[test]
-    fn test_read_write_header(header: Header) {
-        // return early if the header strings are too long
-        if header.version.len() > HEADER_VERSION_MAX_LEN || header.date.len() > HEADER_DATE_MAX_LEN {
-            return
+        #[test]
+        fn test_read_write_header(header: Header) {
+            // return early if the header strings are too long
+            if header.version.len() > HEADER_VERSION_MAX_LEN || header.date.len() > HEADER_DATE_MAX_LEN {
+                // ...
+            } else {
+                let mut buf = [0u8; 512];
+                write_header(&mut buf.as_mut(), &header).unwrap();
+                let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
+                assert_eq!(endian, FloatingPointEndian::Little);
+                assert_eq!(actual_header, header);
+            }
         }
-        let mut buf = [0u8; 512];
-        write_header(&mut buf.as_mut(), &header).unwrap();
-        let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
-        assert_eq!(endian, FloatingPointEndian::Little);
-        assert_eq!(actual_header, header);
     }
+
+    proptest! {
+        #[test]
+        fn test_compress_bytes(bytes: Vec<u8>, allow_uncompressed: bool) {
+            let mut buf = std::io::Cursor::new(vec![0u8; bytes.len() * 2]);
+            let compressed_len = write_compressed_bytes(&mut buf, &bytes, flate2::Compression::new(9), allow_uncompressed).unwrap();
+            if allow_uncompressed {
+                assert!(compressed_len <= bytes.len());
+            }
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            let uncompressed = read_compressed_bytes(&mut buf, bytes.len() as u64, compressed_len as u64, allow_uncompressed).unwrap();
+            assert_eq!(uncompressed, bytes);
+        }
     }
 }

@@ -242,13 +242,14 @@ pub(crate) fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Rea
     Ok((vli >> 1) as usize)
 }
 
+/// Reads ZLib compressed bytes.
 pub(crate) fn read_compressed_bytes(
     input: &mut (impl Read + Seek),
     uncompressed_length: u64,
     compressed_length: u64,
-    skip_equal_len: bool,
+    allow_uncompressed: bool,
 ) -> ReadResult<Vec<u8>> {
-    let bytes = if uncompressed_length == compressed_length && skip_equal_len {
+    let bytes = if uncompressed_length == compressed_length && allow_uncompressed {
         read_bytes(input, compressed_length as usize)?
     } else {
         let start = input.stream_position().unwrap();
@@ -265,6 +266,31 @@ pub(crate) fn read_compressed_bytes(
     };
     assert_eq!(bytes.len(), uncompressed_length as usize);
     Ok(bytes)
+}
+
+/// ZLib compresses bytes. If allow_uncompressed is true, we overwrite the compressed with the
+/// uncompressed bytes if it turns out that the compressed bytes are longer.
+pub(crate) fn write_compressed_bytes(
+    output: &mut (impl Write + Seek),
+    bytes: &[u8],
+    compression_level: flate2::Compression,
+    allow_uncompressed: bool,
+) -> WriteResult<usize> {
+    let start = output.stream_position()?;
+    let mut d = flate2::write::ZlibEncoder::new(output, compression_level);
+    d.write_all(bytes)?;
+    d.flush()?;
+    assert_eq!(d.total_in() as usize, bytes.len());
+    let compressed_written = d.total_out() as usize;
+    let output2 = d.flush_finish()?;
+    if !allow_uncompressed || compressed_written < bytes.len() {
+        Ok(compressed_written)
+    } else {
+        // it turns out that the compression was futile!
+        output2.seek(SeekFrom::Start(start))?;
+        output2.write_all(bytes)?;
+        Ok(bytes.len())
+    }
 }
 
 #[inline]

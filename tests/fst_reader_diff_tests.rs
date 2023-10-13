@@ -5,7 +5,6 @@
 use fst_native::*;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
-use std::fmt::format;
 use std::fs::File;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
@@ -284,21 +283,27 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 }
 
 #[test]
+#[ignore]
+fn diff_aldec_spi_write() {
+    run_diff_test("fsts/aldec/SPI_Write.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_gtkwave_des() {
+    run_diff_test("fsts/gtkwave-analyzer/des.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_gtkwave_transaction() {
+    run_diff_test("fsts/gtkwave-analyzer/transaction.fst", &FstFilter::all());
+}
+
+#[test]
 fn diff_verilator_basic_tests_anon() {
-    run_diff_test("fsts/VerilatorBasicTests_Anon.fst", &FstFilter::all());
+    run_diff_test("fsts/verilator/basic_test.fst", &FstFilter::all());
 }
 
 #[test]
-fn diff_des() {
-    run_diff_test("fsts/des.fst", &FstFilter::all());
-}
-
-#[test]
-fn diff_transaction() {
-    run_diff_test("fsts/transaction.fst", &FstFilter::all());
-}
-
-#[test]
-fn diff_data_types() {
-    run_diff_test("fsts/Verilator_many_sv_datatypes.fst", &FstFilter::all());
+fn diff_verilator_sv_data_types() {
+    run_diff_test("fsts/verilator/many_sv_datatypes.fst", &FstFilter::all());
 }

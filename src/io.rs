@@ -4,7 +4,6 @@
 // Contains basic read and write operations for FST files.
 
 use crate::types::*;
-use lz4_flex::compress;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::io::{Read, Seek, SeekFrom, Write};
 

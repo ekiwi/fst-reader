@@ -4,8 +4,8 @@
 // Contains basic read and write operations for FST files.
 
 use crate::types::*;
+use lz4_flex::compress;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use std::cmp::max;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -18,6 +18,9 @@ pub enum ReaderErrorKind {
     DecompressLz4(lz4_flex::block::DecompressError),
     /// The FST file is still being compressed into its final GZIP wrapper.
     NotFinishedCompressing(),
+    /// Failed to parse the string contained in an enum table attribute.
+    EnumTableString(),
+    ParseInt(std::num::ParseIntError),
 }
 #[derive(Debug)]
 pub struct ReaderError {
@@ -59,9 +62,18 @@ impl From<lz4_flex::block::DecompressError> for ReaderError {
     }
 }
 
+impl From<std::num::ParseIntError> for ReaderError {
+    fn from(value: std::num::ParseIntError) -> Self {
+        let kind = ReaderErrorKind::ParseInt(value);
+        ReaderError { kind }
+    }
+}
+
 pub type ReadResult<T> = std::result::Result<T, ReaderError>;
 
 pub type WriteResult<T> = std::result::Result<T, ReaderError>;
+
+//////////////// Primitives
 
 #[inline]
 pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> {
@@ -265,7 +277,7 @@ pub(crate) fn read_multi_bit_signal_time_delta(bytes: &[u8], offset: u32) -> Rea
 }
 
 /// Reads ZLib compressed bytes.
-pub(crate) fn read_compressed_bytes(
+pub(crate) fn read_zlib_compressed_bytes(
     input: &mut (impl Read + Seek),
     uncompressed_length: u64,
     compressed_length: u64,
@@ -362,6 +374,18 @@ fn write_f64(output: &mut impl Write, value: f64) -> WriteResult<()> {
     Ok(())
 }
 
+fn read_lz4_compressed_bytes(
+    input: &mut impl Read,
+    uncompressed_length: usize,
+    compressed_length: usize,
+) -> ReadResult<Vec<u8>> {
+    let compressed = read_bytes(input, compressed_length)?;
+    let bytes = lz4_flex::decompress(&compressed, uncompressed_length)?;
+    Ok(bytes)
+}
+
+//////////////// Header
+
 const HEADER_LENGTH: u64 = 329;
 const HEADER_VERSION_MAX_LEN: usize = 128;
 const HEADER_DATE_MAX_LEN: usize = 119;
@@ -418,13 +442,15 @@ pub(crate) fn write_header(output: &mut impl Write, header: &Header) -> WriteRes
     Ok(())
 }
 
+//////////////// Geometry
+
 pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<SignalInfo>> {
     let section_length = read_u64(input)?;
     let uncompressed_length = read_u64(input)?;
     let max_handle = read_u64(input)?;
     let compressed_length = section_length - 3 * 8;
 
-    let bytes = read_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
 
     let mut signals: Vec<SignalInfo> = Vec::with_capacity(max_handle as usize);
     let mut byte_reader: &[u8] = &bytes;
@@ -468,6 +494,230 @@ pub(crate) fn write_geometry(
     output.seek(SeekFrom::Start(end))?;
 
     Ok(())
+}
+
+//////////////// Hierarchy
+
+pub(crate) fn read_hierarchy_bytes(
+    input: &mut (impl Read + Seek),
+    compression: HierarchyCompression,
+) -> ReadResult<Vec<u8>> {
+    let section_length = read_u64(input)? as usize;
+    let uncompressed_length = read_u64(input)? as usize;
+    let compressed_length = section_length - 2 * 8;
+
+    let bytes = match compression {
+        HierarchyCompression::ZLib => {
+            let start = input.stream_position().unwrap();
+            let mut d = flate2::read::GzDecoder::new(input);
+            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
+            d.read_to_end(&mut uncompressed)?;
+            // the decoder often reads more bytes than it should, we fix this here
+            d.into_inner()
+                .seek(SeekFrom::Start(start + compressed_length as u64))?;
+            uncompressed
+        }
+        HierarchyCompression::Lz4 => {
+            read_lz4_compressed_bytes(input, uncompressed_length, compressed_length)?
+        }
+        HierarchyCompression::Lz4Duo => todo!("Implement LZ4 Duo!"),
+    };
+    assert_eq!(bytes.len(), uncompressed_length);
+    Ok(bytes)
+}
+
+pub(crate) fn write_hierarchy(output: &mut (impl Write + Seek)) -> WriteResult<()> {
+    todo!();
+}
+
+fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchyEntry> {
+    let parts: Vec<&str> = value.split(" ").collect();
+    if parts.len() < 2 {
+        return Err(ReaderError {
+            kind: ReaderErrorKind::EnumTableString(),
+        });
+    }
+    let name = parts[0].to_string();
+    let element_count = usize::from_str_radix(parts[1], 10)?;
+    if parts.len() != 2 + element_count * 2 {
+        return Err(ReaderError {
+            kind: ReaderErrorKind::EnumTableString(),
+        });
+    }
+    let mut mapping = Vec::with_capacity(element_count);
+    for ii in 0..element_count {
+        let name = parts[2 + ii].to_string();
+        let value = parts[2 + element_count + ii].to_string();
+        mapping.push((value, name));
+    }
+    // TODO: deal with correct de-escaping
+    Ok(FstHierarchyEntry::EnumTable {
+        name,
+        handle,
+        mapping,
+    })
+}
+
+fn parse_misc_attribute(
+    name: String,
+    tpe: MiscType,
+    arg: u64,
+    arg2: Option<u64>,
+) -> ReadResult<FstHierarchyEntry> {
+    let res = match tpe {
+        MiscType::Comment => FstHierarchyEntry::Comment { string: name },
+        MiscType::EnvVar => todo!("EnvVar Attribute"),
+        MiscType::SupVar => todo!("SupVar Attribute"),
+        MiscType::PathName => FstHierarchyEntry::PathName { name, id: arg },
+        MiscType::SourceStem => FstHierarchyEntry::SourceStem {
+            is_instantiation: false,
+            path_id: arg2.unwrap(),
+            line: arg,
+        },
+        MiscType::SourceInstantiationStem => FstHierarchyEntry::SourceStem {
+            is_instantiation: true,
+            path_id: arg2.unwrap(),
+            line: arg,
+        },
+        MiscType::ValueList => todo!("ValueList Attribute"),
+        MiscType::EnumTable => {
+            if name.is_empty() {
+                FstHierarchyEntry::EnumTableRef { handle: arg }
+            } else {
+                enum_table_from_string(name, arg)?
+            }
+        }
+        MiscType::Unknown => todo!("unknown Attribute"),
+    };
+    Ok(res)
+}
+
+pub(crate) fn read_hierarchy_entry(
+    input: &mut impl Read,
+    handle_count: &mut u32,
+) -> ReadResult<Option<FstHierarchyEntry>> {
+    let entry_tpe = match read_u8(input) {
+        Ok(tpe) => tpe,
+        Err(_) => return Ok(None),
+    };
+    let entry = match entry_tpe {
+        254 => {
+            // VcdScope (ScopeType)
+            let tpe = FstScopeType::try_from_primitive(read_u8(input)?)?;
+            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+            let component = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+            FstHierarchyEntry::Scope {
+                tpe,
+                name,
+                component,
+            }
+        }
+        0..=29 => {
+            // VcdEvent ... SvShortReal (VariableType)
+            let tpe = FstVarType::try_from_primitive(entry_tpe)?;
+            let direction = FstVarDirection::try_from_primitive(read_u8(input)?)?;
+            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+            let (raw_length, _) = read_variant_u32(input)?;
+            let length = if tpe == FstVarType::Port {
+                // remove delimiting spaces and adjust signal size
+                (raw_length - 2) / 3
+            } else {
+                raw_length
+            };
+            let (alias, _) = read_variant_u32(input)?;
+            let (is_alias, handle) = if alias == 0 {
+                *handle_count += 1;
+                (false, FstSignalHandle::new(*handle_count))
+            } else {
+                (true, FstSignalHandle::new(alias))
+            };
+            FstHierarchyEntry::Var {
+                tpe,
+                direction,
+                name,
+                length,
+                handle,
+                is_alias,
+            }
+        }
+        255 => {
+            // VcdUpScope (ScopeType)
+            FstHierarchyEntry::UpScope
+        }
+        252 => {
+            let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
+            let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
+            let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
+            let arg = read_variant_u64(input)?;
+            match tpe {
+                AttributeType::Misc => {
+                    let arg2 = if subtype == MiscType::SourceStem
+                        || subtype == MiscType::SourceInstantiationStem
+                    {
+                        Some(read_variant_u64(&mut name.as_bytes())?)
+                    } else {
+                        None
+                    };
+                    parse_misc_attribute(name, subtype, arg, arg2)?
+                }
+                AttributeType::Array => todo!("ARRAY attributes"),
+                AttributeType::Enum => todo!("ENUM attributes"),
+                AttributeType::Pack => todo!("PACK attributes"),
+            }
+        }
+        253 => {
+            // GenAttributeEnd (ScopeType)
+            FstHierarchyEntry::AttributeEnd
+        }
+
+        other => todo!("Deal with hierarchy entry of type: {other}"),
+    };
+
+    Ok(Some(entry))
+}
+
+//////////////// Vale Change Data
+
+// for debugging
+fn print_python_bytes(bytes: &[u8]) {
+    print!("b\"");
+    for bb in bytes {
+        print!("\\x{:02x}", bb);
+    }
+    println!("\"");
+}
+
+pub(crate) fn read_packed_signal_values(
+    input: &mut (impl Read + Seek),
+    len: u32,
+    tpe: ValueChangePackType,
+) -> ReadResult<Vec<u8>> {
+    let (value, skiplen) = read_variant_u32(input)?;
+    if value != 0 {
+        let uncompressed_length = value as u64;
+        let uncompressed: Vec<u8> = match tpe {
+            ValueChangePackType::Lz4 => {
+                let compressed_length = (len - skiplen) as u64;
+                read_lz4_compressed_bytes(
+                    input,
+                    uncompressed_length as usize,
+                    compressed_length as usize,
+                )?
+            }
+            ValueChangePackType::FastLz => todo!("FastLZ"),
+            ValueChangePackType::Zlib => {
+                let compressed_length = len as u64;
+                // Important: for signals, we do not skip decompression,
+                // even if the compressed and uncompressed length are the same
+                read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, false)?
+            }
+        };
+        Ok(uncompressed)
+    } else {
+        let dest_length = len - skiplen;
+        let bytes = read_bytes(input, dest_length as usize)?;
+        Ok(bytes)
+    }
 }
 
 #[cfg(test)]
@@ -550,7 +800,7 @@ mod tests {
                 assert!(compressed_len <= bytes.len());
             }
             buf.seek(SeekFrom::Start(0)).unwrap();
-            let uncompressed = read_compressed_bytes(&mut buf, bytes.len() as u64, compressed_len as u64, allow_uncompressed).unwrap();
+            let uncompressed = read_zlib_compressed_bytes(&mut buf, bytes.len() as u64, compressed_len as u64, allow_uncompressed).unwrap();
             assert_eq!(uncompressed, bytes);
         }
     }

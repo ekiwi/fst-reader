@@ -15,6 +15,7 @@ pub(crate) const HIERARCHY_NAME_MAX_SIZE: usize = 512;
 pub(crate) const HIERARCHY_ATTRIBUTE_MAX_SIZE: usize = 65536 + 4096;
 
 #[derive(Debug)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub struct FstSignalHandle(NonZeroU32);
 
 impl FstSignalHandle {
@@ -71,6 +72,7 @@ pub(crate) enum BlockType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub enum FstScopeType {
     // VCD
     Module = 0,
@@ -106,6 +108,7 @@ pub enum FstScopeType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq, Copy, Clone)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub enum FstVarType {
     // VCD
     Event = 0,
@@ -143,6 +146,7 @@ pub enum FstVarType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub enum FstVarDirection {
     Implicit = 0,
     Input = 1,
@@ -249,6 +253,7 @@ pub(crate) struct DataSectionInfo {
 }
 
 #[derive(Debug)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub enum FstHierarchyEntry {
     Scope {
         tpe: FstScopeType,
@@ -277,6 +282,17 @@ pub enum FstHierarchyEntry {
         is_instantiation: bool,
         path_id: u64,
         line: u64,
+    },
+    Comment {
+        string: String,
+    },
+    EnumTable {
+        name: String,
+        handle: u64,
+        mapping: Vec<(String, String)>,
+    },
+    EnumTableRef {
+        handle: u64,
     },
     AttributeEnd,
 }

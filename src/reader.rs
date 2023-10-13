@@ -4,7 +4,6 @@
 
 use crate::io::*;
 use crate::types::*;
-use num_enum::TryFromPrimitive;
 use std::cmp::Ordering;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
@@ -357,151 +356,11 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 }
 
-fn read_hierarchy_bytes(
-    input: &mut (impl Read + Seek),
-    compression: HierarchyCompression,
-) -> Result<Vec<u8>> {
-    let section_length = read_u64(input)? as usize;
-    let uncompressed_length = read_u64(input)? as usize;
-    let compressed_length = section_length - 2 * 8;
-
-    let bytes = match compression {
-        HierarchyCompression::ZLib => {
-            let start = input.stream_position().unwrap();
-            let mut d = flate2::read::GzDecoder::new(input);
-            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
-            d.read_to_end(&mut uncompressed)?;
-            // the decoder often reads more bytes than it should, we fix this here
-            d.into_inner()
-                .seek(SeekFrom::Start(start + compressed_length as u64))?;
-            uncompressed
-        }
-        HierarchyCompression::Lz4 => {
-            let compressed = read_bytes(input, compressed_length)?;
-            lz4_flex::decompress(&compressed, uncompressed_length)?
-        }
-        HierarchyCompression::Lz4Duo => todo!("Implement LZ4 Duo!"),
-    };
-    assert_eq!(bytes.len(), uncompressed_length);
-    Ok(bytes)
-}
-
-fn parse_misc_attribute(
-    name: String,
-    tpe: MiscType,
-    arg: u64,
-    arg2: Option<u64>,
-) -> FstHierarchyEntry {
-    match tpe {
-        MiscType::Comment => todo!("comment Attribute"),
-        MiscType::EnvVar => todo!("EnvVar Attribute"),
-        MiscType::SupVar => todo!("SupVar Attribute"),
-        MiscType::PathName => FstHierarchyEntry::PathName { name, id: arg },
-        MiscType::SourceStem => FstHierarchyEntry::SourceStem {
-            is_instantiation: false,
-            path_id: arg2.unwrap(),
-            line: arg,
-        },
-        MiscType::SourceInstantiationStem => FstHierarchyEntry::SourceStem {
-            is_instantiation: true,
-            path_id: arg2.unwrap(),
-            line: arg,
-        },
-        MiscType::ValueList => todo!("ValueList Attribute"),
-        MiscType::EnumTable => todo!("EnumTable Attribute"),
-        MiscType::Unknown => todo!("unknown Attribute"),
-    }
-}
-
 struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> {
     input: &'a mut R,
     meta: &'a MetaData,
     filter: &'a DataFilter,
     callback: &'a mut F,
-}
-
-fn read_hierarchy_entry(
-    input: &mut impl Read,
-    handle_count: &mut u32,
-) -> Result<Option<FstHierarchyEntry>> {
-    let entry_tpe = match read_u8(input) {
-        Ok(tpe) => tpe,
-        Err(_) => return Ok(None),
-    };
-    let entry = match entry_tpe {
-        254 => {
-            // VcdScope (ScopeType)
-            let tpe = FstScopeType::try_from_primitive(read_u8(input)?)?;
-            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
-            let component = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
-            FstHierarchyEntry::Scope {
-                tpe,
-                name,
-                component,
-            }
-        }
-        0..=29 => {
-            // VcdEvent ... SvShortReal (VariableType)
-            let tpe = FstVarType::try_from_primitive(entry_tpe)?;
-            let direction = FstVarDirection::try_from_primitive(read_u8(input)?)?;
-            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
-            let (raw_length, _) = read_variant_u32(input)?;
-            let length = if tpe == FstVarType::Port {
-                // remove delimiting spaces and adjust signal size
-                (raw_length - 2) / 3
-            } else {
-                raw_length
-            };
-            let (alias, _) = read_variant_u32(input)?;
-            let (is_alias, handle) = if alias == 0 {
-                *handle_count += 1;
-                (false, FstSignalHandle::new(*handle_count))
-            } else {
-                (true, FstSignalHandle::new(alias))
-            };
-            FstHierarchyEntry::Var {
-                tpe,
-                direction,
-                name,
-                length,
-                handle,
-                is_alias,
-            }
-        }
-        255 => {
-            // VcdUpScope (ScopeType)
-            FstHierarchyEntry::UpScope
-        }
-        252 => {
-            let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
-            let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
-            let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
-            let arg = read_variant_u64(input)?;
-            match tpe {
-                AttributeType::Misc => {
-                    let arg2 = if subtype == MiscType::SourceStem
-                        || subtype == MiscType::SourceInstantiationStem
-                    {
-                        Some(read_variant_u64(&mut name.as_bytes())?)
-                    } else {
-                        None
-                    };
-                    parse_misc_attribute(name, subtype, arg, arg2)
-                }
-                AttributeType::Array => todo!("ARRAY attributes"),
-                AttributeType::Enum => todo!("ENUM attributes"),
-                AttributeType::Pack => todo!("PACK attributes"),
-            }
-        }
-        253 => {
-            // GenAttributeEnd (ScopeType)
-            FstHierarchyEntry::AttributeEnd
-        }
-
-        other => todo!("Deal with hierarchy entry of type: {other}"),
-    };
-
-    Ok(Some(entry))
 }
 
 #[inline]
@@ -528,7 +387,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         // now that we know how long the block actually is, we can go back to it
         self.input
             .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
-        let bytes = read_compressed_bytes(
+        let bytes = read_zlib_compressed_bytes(
             &mut self.input,
             uncompressed_length,
             compressed_length,
@@ -560,7 +419,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         let compressed_length = read_variant_u64(&mut self.input)?;
         let max_handle = read_variant_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
-        let bytes = read_compressed_bytes(
+        let bytes = read_zlib_compressed_bytes(
             &mut self.input,
             uncompressed_length,
             compressed_length,
@@ -734,38 +593,6 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
         Ok((chain_table, chain_table_lengths))
     }
 
-    fn read_packed_values(
-        &mut self,
-        chain_table_length: u32,
-        packtpe: ValueChangePackType,
-    ) -> Result<Vec<u8>> {
-        let (value, skiplen) = read_variant_u32(&mut self.input)?;
-        if value != 0 {
-            let uncompressed_length = value as u64;
-            // note: for compressed entries, value is actually the first byte of the compressed block
-            let compressed_length = chain_table_length as u64;
-            let uncompressed: Vec<u8> = match packtpe {
-                ValueChangePackType::Lz4 => todo!("Lz4"),
-                ValueChangePackType::FastLz => todo!("FastLZ"),
-                ValueChangePackType::Zlib => {
-                    // Important: for signals, we do not skip decompression,
-                    // even if the compressed and uncompressed length are the same
-                    read_compressed_bytes(
-                        &mut self.input,
-                        uncompressed_length,
-                        compressed_length,
-                        false,
-                    )?
-                }
-            };
-            Ok(uncompressed)
-        } else {
-            let dest_length = chain_table_length - skiplen;
-            let bytes = read_bytes(&mut self.input, dest_length as usize)?;
-            Ok(bytes)
-        }
-    }
-
     fn read_value_changes(
         &mut self,
         section_kind: DataSectionKind,
@@ -803,7 +630,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     // read all signal values
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-                    let mut bytes = self.read_packed_values(*length, packtpe)?;
+                    let mut bytes = read_packed_signal_values(&mut self.input, *length, packtpe)?;
 
                     // read first time delta
                     let len = self.meta.signals[signal_idx].len();
@@ -872,7 +699,25 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                             (self.callback)(*time, signal_handle, std::str::from_utf8(&value)?);
                             len
                         } else {
-                            todo!("implement support for reals")
+                            assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
+                            let value = read_f64(&mut mu_slice, self.meta.float_endian)?;
+                            // TODO: return doubles not as string
+                            // this tries to emulate the formating behavior of the C++ FST implementation
+                            // "%.16g"
+                            let mut string = format!("{:.16}", value);
+                            while string.ends_with("0") {
+                                let mut chars = string.chars();
+                                chars.next_back();
+                                string = chars.as_str().to_string();
+                            }
+                            if string.ends_with(".") {
+                                let mut chars = string.chars();
+                                chars.next_back();
+                                string = chars.as_str().to_string();
+                            }
+
+                            (self.callback)(*time, signal_handle, &string);
+                            8
                         }
                     }
                 };

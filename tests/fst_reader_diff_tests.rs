@@ -5,6 +5,7 @@
 use fst_native::*;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
+use std::fmt::format;
 use std::fs::File;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
@@ -93,6 +94,14 @@ unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierA
                     let is_instantiation = misc_tpe == fst_sys::fstMiscType_FST_MT_SOURCEISTEM;
                     format!("SourceStem:: {is_instantiation}, {path_id}, {line}")
                 }
+                7 => {
+                    // FST_MT_ENUMTABLE (missing from fst_sys)
+                    if name.is_empty() {
+                        format!("EnumTableRef: {}", attr.arg)
+                    } else {
+                        format!("EnumTable: {name} ({})", attr.arg)
+                    }
+                }
                 other => todo!("misc attribute of subtype {other}"),
             }
         }
@@ -143,6 +152,28 @@ fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
             path_id,
             line,
         } => format!("SourceStem:: {is_instantiation}, {path_id}, {line}"),
+        FstHierarchyEntry::Comment { string } => format!("Comment: {string}"),
+        FstHierarchyEntry::EnumTable {
+            name,
+            handle,
+            mapping,
+        } => {
+            let names = mapping
+                .iter()
+                .map(|(v, n)| n.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let values = mapping
+                .iter()
+                .map(|(v, n)| v.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "EnumTable: {name} {} {names} {values} ({handle})",
+                mapping.len()
+            )
+        }
+        FstHierarchyEntry::EnumTableRef { handle } => format!("EnumTableRef: {handle}"),
     }
 }
 
@@ -203,6 +234,7 @@ fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
         out.push_back((time, handle, string));
     };
     unsafe {
+        fst_sys::fstReaderIterBlocksSetNativeDoublesOnCallback(handle, 0);
         fst_sys::fstReaderSetFacProcessMaskAll(handle);
         let (data, f) = unpack_closure(&mut f);
         fst_sys::fstReaderIterBlocks(handle, Some(f), data, std::ptr::null_mut());
@@ -264,4 +296,9 @@ fn diff_des() {
 #[test]
 fn diff_transaction() {
     run_diff_test("fsts/transaction.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_data_types() {
+    run_diff_test("fsts/Verilator_many_sv_datatypes.fst", &FstFilter::all());
 }

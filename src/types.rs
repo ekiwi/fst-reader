@@ -195,7 +195,8 @@ pub(crate) struct Header {
     pub(crate) time_zero: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub(crate) enum SignalInfo {
     BitVec(NonZeroU32),
     Real,

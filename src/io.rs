@@ -5,6 +5,7 @@
 
 use crate::types::*;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::cmp::max;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -435,6 +436,40 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
     Ok(signals)
 }
 
+const GEOMETRY_COMPRESSION_LEVEL: flate2::Compression = flate2::Compression::best();
+
+pub(crate) fn write_geometry(
+    output: &mut (impl Write + Seek),
+    signals: &Vec<SignalInfo>,
+) -> WriteResult<()> {
+    // remember start to fix the section length afterwards
+    let start = output.stream_position()?;
+    write_u64(output, 0)?; // dummy section length
+
+    // write uncompressed signal info
+    let mut bytes: Vec<u8> = Vec::with_capacity(signals.len() * 2);
+    for signal in signals {
+        write_variant_u64(&mut bytes, signal.to_file_format() as u64)?;
+    }
+    let uncompressed_length = bytes.len() as u64;
+    write_u64(output, uncompressed_length)?;
+    let max_handle = signals.len() as u64;
+    write_u64(output, max_handle)?;
+
+    // compress signals
+    let compressed_len =
+        write_compressed_bytes(output, &bytes, GEOMETRY_COMPRESSION_LEVEL, true)? as u64;
+
+    // fix section length
+    let section_length = compressed_len + 3 * 8;
+    let end = output.stream_position()?;
+    output.seek(SeekFrom::Start(start))?;
+    write_u64(output, section_length)?;
+    output.seek(SeekFrom::Start(end))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,15 +530,14 @@ mod tests {
         #[test]
         fn test_read_write_header(header: Header) {
             // return early if the header strings are too long
-            if header.version.len() > HEADER_VERSION_MAX_LEN || header.date.len() > HEADER_DATE_MAX_LEN {
-                // ...
-            } else {
-                let mut buf = [0u8; 512];
-                write_header(&mut buf.as_mut(), &header).unwrap();
-                let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
-                assert_eq!(endian, FloatingPointEndian::Little);
-                assert_eq!(actual_header, header);
-            }
+            prop_assume!(header.version.len() <= HEADER_VERSION_MAX_LEN);
+            prop_assume!(header.date.len() <= HEADER_DATE_MAX_LEN );
+
+            let mut buf = [0u8; 512];
+            write_header(&mut buf.as_mut(), &header).unwrap();
+            let (actual_header, endian) = read_header(&mut buf.as_slice()).unwrap();
+            assert_eq!(endian, FloatingPointEndian::Little);
+            assert_eq!(actual_header, header);
         }
     }
 
@@ -518,6 +552,19 @@ mod tests {
             buf.seek(SeekFrom::Start(0)).unwrap();
             let uncompressed = read_compressed_bytes(&mut buf, bytes.len() as u64, compressed_len as u64, allow_uncompressed).unwrap();
             assert_eq!(uncompressed, bytes);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_read_write_geometry(signals: Vec<SignalInfo>) {
+            let max_len = signals.len() * 4 + 3 * 8;
+            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+            write_geometry(&mut buf, &signals).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            let actual = read_geometry(&mut buf).unwrap();
+            assert_eq!(actual.len(), signals.len());
+            assert_eq!(actual, signals);
         }
     }
 }

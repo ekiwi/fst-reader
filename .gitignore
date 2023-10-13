@@ -2,3 +2,4 @@
 /Cargo.lock
 /.idea/
 /proptest-regressions/
+/lcov.info

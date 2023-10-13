@@ -123,6 +123,27 @@ pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<u64> {
 }
 
 #[inline]
+pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> WriteResult<()> {
+    // often, the value is small
+    if value <= 0x7f {
+        let byte = [value as u8; 1];
+        output.write_all(&byte)?;
+        return Ok(());
+    }
+
+    let mut bytes = Vec::with_capacity(10);
+    while value != 0 {
+        let next_value = value >> 7;
+        let mask: u8 = if next_value == 0 { 0 } else { 0x80 };
+        bytes.push((value & 0x7f) as u8 | mask);
+        value = next_value;
+    }
+    assert!(bytes.len() <= 10);
+    output.write_all(&bytes)?;
+    Ok(())
+}
+
+#[inline]
 pub(crate) fn read_u64(input: &mut impl Read) -> ReadResult<u64> {
     let mut buf = [0u8; 8];
     input.read_exact(&mut buf)?;
@@ -429,6 +450,17 @@ mod tests {
         assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
     }
 
+    proptest! {
+         #[test]
+        fn test_read_write_variant_u64(value: u64) {
+            let mut buf = std::io::Cursor::new(vec![0u8; 24]);
+            write_variant_u64(&mut buf, value).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            let read_value = read_variant_u64(&mut buf).unwrap();
+            assert_eq!(read_value, value);
+        }
+    }
+
     #[test]
     fn test_read_c_str_fixed_length() {
         let input = [b'h', b'i', 0u8, b'x'];
@@ -442,6 +474,7 @@ mod tests {
             "hii"
         );
     }
+
     proptest! {
         #[test]
         fn test_write_c_str_fixed_length(string: String, max_len in 1 .. 400usize) {

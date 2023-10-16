@@ -533,7 +533,6 @@ fn diff_scope_with_comment() {
 }
 
 #[test]
-#[ignore] // panics!
 fn diff_vcd_file_with_errors() {
     run_diff_test("fsts/VCD_file_with_errors.vcd.fst", &FstFilter::all());
 }

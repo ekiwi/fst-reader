@@ -292,13 +292,7 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 
     fn read_geometry(&mut self) -> Result<()> {
-        // skip this section if the header is not complete
-        if self.header_incomplete() {
-            let section_length = read_u64(&mut self.input)?;
-            self.skip(section_length, 8)?;
-        } else {
-            self.signals = Some(read_geometry(&mut self.input)?);
-        }
+        self.signals = Some(read_geometry(&mut self.input)?);
         Ok(())
     }
 
@@ -326,6 +320,7 @@ impl<R: Read + Seek> HeaderReader<R> {
                 Err(other) => return Err(other),
                 Ok(tpe) => tpe,
             };
+
             match block_tpe {
                 BlockType::Header => {
                     let (header, endian) = read_header(&mut self.input)?;

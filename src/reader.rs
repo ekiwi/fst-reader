@@ -680,7 +680,9 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
-                        todo!("variable length signal support! {len} {skiplen2}")
+                        let value = read_bytes(&mut mu_slice, len as usize)?;
+                        (self.callback)(*time, signal_handle, std::str::from_utf8(&value)?);
+                        len + skiplen2
                     }
                     len => {
                         let signal_len = len as usize;

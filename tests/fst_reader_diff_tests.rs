@@ -6,6 +6,7 @@ use fst_native::*;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
 use std::fs::File;
+use std::future::pending;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
     unsafe {
@@ -20,26 +21,6 @@ fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
             date: CStr::from_ptr(date).to_str().unwrap().to_string(),
         }
     }
-}
-
-// imported from fst_sys
-type FstChangeCallback = extern "C" fn(*mut c_void, u64, fst_sys::fstHandle, *const c_uchar);
-unsafe fn unpack_closure<F>(closure: &mut F) -> (*mut c_void, FstChangeCallback)
-where
-    F: FnMut(u64, fst_sys::fstHandle, *const c_uchar),
-{
-    extern "C" fn trampoline<F>(
-        data: *mut c_void,
-        time: u64,
-        handle: fst_sys::fstHandle,
-        value: *const c_uchar,
-    ) where
-        F: FnMut(u64, fst_sys::fstHandle, *const c_uchar),
-    {
-        let closure: &mut F = unsafe { &mut *(data as *mut F) };
-        (*closure)(time, handle, value);
-    }
-    (closure as *mut F as *mut c_void, trampoline::<F>)
 }
 
 fn fst_sys_load_hierarchy(handle: *mut c_void) -> VecDeque<String> {
@@ -100,6 +81,9 @@ unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierA
                     } else {
                         format!("EnumTable: {name} ({})", attr.arg)
                     }
+                }
+                fst_sys::fstMiscType_FST_MT_COMMENT => {
+                    format!("Comment: {name}")
                 }
                 other => todo!("misc attribute of subtype {other}"),
             }
@@ -223,22 +207,55 @@ fn diff_hierarchy<R: std::io::Read + std::io::Seek>(
 
 fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
     let mut out = VecDeque::new();
-    let mut f = |time: u64, handle: fst_sys::fstHandle, value: *const c_uchar| {
-        let string: String = unsafe {
-            CStr::from_ptr(value as *const c_char)
-                .to_str()
-                .unwrap()
-                .to_string()
-        };
-        out.push_back((time, handle, string));
-    };
     unsafe {
         fst_sys::fstReaderIterBlocksSetNativeDoublesOnCallback(handle, 0);
         fst_sys::fstReaderSetFacProcessMaskAll(handle);
-        let (data, f) = unpack_closure(&mut f);
-        fst_sys::fstReaderIterBlocks(handle, Some(f), data, std::ptr::null_mut());
+        let out_ptr = (&mut out) as *mut VecDeque<(u64, u32, String)>;
+        let user_ptr = out_ptr as *mut c_void;
+        fst_sys::fstReaderIterBlocks2(
+            handle,
+            Some(signal_change_callback),
+            Some(var_signal_change_callback),
+            user_ptr,
+            std::ptr::null_mut(),
+        );
     }
     out
+}
+
+struct CallbackData {
+    out: VecDeque<(u64, u32, String)>,
+}
+
+extern "C" fn signal_change_callback(
+    data: *mut c_void,
+    time: u64,
+    handle: fst_sys::fstHandle,
+    value: *const c_uchar,
+) {
+    let string: String = unsafe {
+        CStr::from_ptr(value as *const c_char)
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+    let signal = (time, handle, string);
+    let out = unsafe { &mut *(data as *mut VecDeque<((u64, u32, String))>) };
+    out.push_back(signal);
+}
+
+extern "C" fn var_signal_change_callback(
+    data: *mut c_void,
+    time: u64,
+    handle: fst_sys::fstHandle,
+    value: *const c_uchar,
+    len: u32,
+) {
+    let bytes = unsafe { std::slice::from_raw_parts(value, len as usize) };
+    let string: String = std::str::from_utf8(bytes).unwrap().to_string();
+    let signal = (time, handle, string);
+    let out = unsafe { &mut *(data as *mut VecDeque<((u64, u32, String))>) };
+    out.push_back(signal);
 }
 
 fn diff_signals<R: std::io::Read + std::io::Seek>(
@@ -286,6 +303,11 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 #[ignore]
 fn diff_aldec_spi_write() {
     run_diff_test("fsts/aldec/SPI_Write.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_amaranth_up_counter() {
+    run_diff_test("fsts/amaranth/up_counter.vcd.fst", &FstFilter::all());
 }
 
 #[test]

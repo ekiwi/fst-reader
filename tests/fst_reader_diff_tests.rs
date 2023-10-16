@@ -346,7 +346,6 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 }
 
 #[test]
-#[ignore] // index out of bounds: the len is 49 but the index is 60
 fn diff_aldec_spi_write() {
     run_diff_test("fsts/aldec/SPI_Write.vcd.fst", &FstFilter::all());
 }
@@ -415,7 +414,6 @@ fn diff_model_sim_cpu_design() {
 }
 
 #[test]
-#[ignore] // index out of bounds: the len is 17 but the index is 26
 fn diff_my_hdl_sigmoid_tb() {
     run_diff_test("fsts/my-hdl/sigmoid_tb.vcd.fst", &FstFilter::all());
 }
@@ -426,7 +424,6 @@ fn diff_my_hdl_simple_memory() {
 }
 
 #[test]
-#[ignore] // index out of bounds: the len is 4 but the index is 4
 fn diff_my_hdl_top() {
     run_diff_test("fsts/my-hdl/top.vcd.fst", &FstFilter::all());
 }

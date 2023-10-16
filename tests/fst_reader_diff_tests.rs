@@ -459,6 +459,12 @@ fn diff_riviera_pro_dump() {
 }
 
 #[test]
+#[ignore] // GTKWave actually crashes on this input, even though it was created by vcd2fst from GTKWave
+fn diff_sigrok() {
+    run_diff_test("fsts/sigrok/libsigrok.vcd.fst", &FstFilter::all());
+}
+
+#[test]
 fn diff_systemc_waveform() {
     run_diff_test("fsts/systemc/waveform.vcd.fst", &FstFilter::all());
 }

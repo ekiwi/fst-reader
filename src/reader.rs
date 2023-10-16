@@ -485,13 +485,10 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                 match shval.cmp(&0) {
                     Ordering::Greater => {
                         value += shval;
-                        match chain_table.last() {
-                            None => {} // this is the first iteration
-                            Some(last_value) => {
-                                let len = (value - last_value) as u32;
-                                chain_table_lengths[prev_idx] = len;
-                            }
-                        };
+                        if !chain_table.is_empty() {
+                            let len = (value - chain_table[prev_idx]) as u32;
+                            chain_table_lengths[prev_idx] = len;
+                        }
                         prev_idx = idx;
                         chain_table.push(value);
                     }
@@ -741,6 +738,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     } else {
                         read_multi_bit_signal_time_delta(&mu, head_pointer[signal_id])?
                     };
+                    assert!(tdelta > 0);
                     // point to the next time step
                     scatter_pointer[signal_id] = tc_head[time_id + tdelta];
                     tc_head[time_id + tdelta] = (signal_id + 1) as u32; // store handle

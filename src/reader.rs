@@ -740,7 +740,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                     } else {
                         read_multi_bit_signal_time_delta(&mu, head_pointer[signal_id])?
                     };
-                    assert!(tdelta > 0);
+
                     // point to the next time step
                     scatter_pointer[signal_id] = tc_head[time_id + tdelta];
                     tc_head[time_id + tdelta] = (signal_id + 1) as u32; // store handle

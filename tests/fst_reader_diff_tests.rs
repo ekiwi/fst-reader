@@ -390,7 +390,7 @@ fn diff_gtkwave_transaction() {
 }
 
 #[test]
-fn diff_icarus_CPU() {
+fn diff_icarus_cpu() {
     run_diff_test("fsts/icarus/CPU.vcd.fst", &FstFilter::all());
 }
 
@@ -433,9 +433,33 @@ fn diff_my_hdl_top() {
 }
 
 #[test]
-#[ignore] // time delta is zero!
 fn diff_ncsim_ffdiv() {
     run_diff_test("fsts/ncsim/ffdiv_32bit_tb.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_quartus_mips_hardware() {
+    run_diff_test("fsts/quartus/mipsHardware.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_quartus_wave() {
+    run_diff_test("fsts/quartus/wave_registradores.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_questa_sim_dump() {
+    run_diff_test("fsts/questa-sim/dump.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_questa_sim_test() {
+    run_diff_test("fsts/questa-sim/test.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_riviera_pro_dump() {
+    run_diff_test("fsts/riviera-pro/dump.vcd.fst", &FstFilter::all());
 }
 
 #[test]

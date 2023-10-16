@@ -123,7 +123,7 @@ impl<R: Read + Seek> FstReader<R> {
     pub fn read_signals(
         &mut self,
         filter: &FstFilter,
-        callback: impl FnMut(u64, FstSignalHandle, &str),
+        callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
     ) -> Result<()> {
         // convert user filters
         let signal_count = self.meta.signals.len();
@@ -156,6 +156,11 @@ impl<R: Read + Seek> FstReader<R> {
     }
 }
 
+pub enum FstSignalValue<'a> {
+    String(&'a str),
+    Real(f64),
+}
+
 fn read_hierarchy(
     input: &mut (impl Read + Seek),
     meta: &MetaData,
@@ -175,7 +180,7 @@ fn read_signals(
     input: &mut (impl Read + Seek),
     meta: &MetaData,
     filter: &DataFilter,
-    mut callback: impl FnMut(u64, FstSignalHandle, &str),
+    mut callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
 ) -> Result<()> {
     let mut reader = DataReader {
         input,
@@ -356,7 +361,7 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 }
 
-struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> {
+struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> {
     input: &'a mut R,
     meta: &'a MetaData,
     filter: &'a DataFilter,
@@ -370,29 +375,7 @@ fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
     }
 }
 
-#[inline]
-fn format_double_as_gtkwave_string(value: f64) -> String {
-    // this tries to emulate the formating behavior of the C++ FST implementation
-    // "%.16g"
-    let mut string = format!("{:.16}", value);
-    while string.ends_with("0") {
-        let mut chars = string.chars();
-        chars.next_back();
-        string = chars.as_str().to_string();
-    }
-    if string.ends_with(".") {
-        let mut chars = string.chars();
-        chars.next_back();
-        string = chars.as_str().to_string();
-    }
-    // patch nan
-    if string == "NaN" {
-        string = "nan".to_string();
-    };
-    string
-}
-
-impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R, F> {
+impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'a, R, F> {
     fn read_time_block(
         &mut self,
         section_start: u64,
@@ -461,13 +444,11 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                             (self.callback)(
                                 start_time,
                                 signal_handle,
-                                std::str::from_utf8(&value)?,
+                                FstSignalValue::String(std::str::from_utf8(&value)?),
                             );
                         } else {
                             let value = read_f64(&mut byte_reader, self.meta.float_endian)?;
-                            // TODO: return doubles not as string
-                            let string = format_double_as_gtkwave_string(value);
-                            (self.callback)(start_time, signal_handle, &string);
+                            (self.callback)(start_time, signal_handle, FstSignalValue::Real(value));
                         }
                     }
                 }
@@ -696,13 +677,21 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
                         let value_buf = [value];
-                        (self.callback)(*time, signal_handle, std::str::from_utf8(&value_buf)?);
+                        (self.callback)(
+                            *time,
+                            signal_handle,
+                            FstSignalValue::String(std::str::from_utf8(&value_buf)?),
+                        );
                         0 // no additional bytes consumed
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
                         let value = read_bytes(&mut mu_slice, len as usize)?;
-                        (self.callback)(*time, signal_handle, std::str::from_utf8(&value)?);
+                        (self.callback)(
+                            *time,
+                            signal_handle,
+                            FstSignalValue::String(std::str::from_utf8(&value)?),
+                        );
                         len + skiplen2
                     }
                     len => {
@@ -719,14 +708,16 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                             } else {
                                 (read_bytes(&mut mu_slice, signal_len)?, len)
                             };
-                            (self.callback)(*time, signal_handle, std::str::from_utf8(&value)?);
+                            (self.callback)(
+                                *time,
+                                signal_handle,
+                                FstSignalValue::String(std::str::from_utf8(&value)?),
+                            );
                             len
                         } else {
                             assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
                             let value = read_f64(&mut mu_slice, self.meta.float_endian)?;
-                            // TODO: return doubles not as string
-                            let string = format_double_as_gtkwave_string(value);
-                            (self.callback)(*time, signal_handle, &string);
+                            (self.callback)(*time, signal_handle, FstSignalValue::Real(value));
                             8
                         }
                     }

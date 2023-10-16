@@ -198,23 +198,48 @@ fn hierarchy_tpe_to_str(tpe: &FstScopeType) -> String {
 fn diff_hierarchy<R: std::io::Read + std::io::Seek>(
     our_reader: &mut FstReader<R>,
     mut exp_hierarchy: VecDeque<String>,
-) {
+) -> Vec<bool> {
+    let mut is_real = Vec::new();
     let check = |entry: FstHierarchyEntry| {
+        // remember if variables are real valued
+        match &entry {
+            FstHierarchyEntry::Var { tpe, handle, .. } => {
+                let is_var_real = match tpe {
+                    FstVarType::Real
+                    | FstVarType::RealParameter
+                    | FstVarType::RealTime
+                    | FstVarType::ShortReal => true,
+                    _ => false,
+                };
+                let idx = handle.get_index();
+                if is_real.len() <= idx {
+                    is_real.resize(idx + 1, false);
+                }
+                is_real[idx] = is_var_real;
+            }
+            _ => {}
+        };
+
         let expected = exp_hierarchy.pop_front().unwrap();
         let actual = hierarchy_to_str(&entry);
         assert_eq!(actual, expected);
         // println!("{actual:?}");
     };
     our_reader.read_hierarchy(check).unwrap();
+    is_real
 }
 
-fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
+fn fst_sys_load_signals(handle: *mut c_void, is_real: &[bool]) -> VecDeque<(u64, u32, String)> {
     let mut out = VecDeque::new();
+    let mut data = CallbackData {
+        out,
+        is_real: Vec::from(is_real),
+    };
     unsafe {
-        fst_sys::fstReaderIterBlocksSetNativeDoublesOnCallback(handle, 0);
+        fst_sys::fstReaderIterBlocksSetNativeDoublesOnCallback(handle, 1);
         fst_sys::fstReaderSetFacProcessMaskAll(handle);
-        let out_ptr = (&mut out) as *mut VecDeque<(u64, u32, String)>;
-        let user_ptr = out_ptr as *mut c_void;
+        let data_ptr = (&mut data) as *mut CallbackData;
+        let user_ptr = data_ptr as *mut c_void;
         fst_sys::fstReaderIterBlocks2(
             handle,
             Some(signal_change_callback),
@@ -223,32 +248,41 @@ fn fst_sys_load_signals(handle: *mut c_void) -> VecDeque<(u64, u32, String)> {
             std::ptr::null_mut(),
         );
     }
-    out
+    data.out
 }
 
 struct CallbackData {
     out: VecDeque<(u64, u32, String)>,
+    is_real: Vec<bool>,
 }
 
 extern "C" fn signal_change_callback(
-    data: *mut c_void,
+    data_ptr: *mut c_void,
     time: u64,
     handle: fst_sys::fstHandle,
     value: *const c_uchar,
 ) {
-    let string: String = unsafe {
-        CStr::from_ptr(value as *const c_char)
-            .to_str()
-            .unwrap()
-            .to_string()
+    let data = unsafe { &mut *(data_ptr as *mut CallbackData) };
+    let signal_idx = (handle - 1) as usize;
+    let string = if data.is_real[signal_idx] {
+        let slic = unsafe { std::slice::from_raw_parts(value as *const u8, 8) };
+        let value = f64::from_le_bytes(slic.try_into().unwrap());
+        format!("{value}")
+    } else {
+        unsafe {
+            CStr::from_ptr(value as *const c_char)
+                .to_str()
+                .unwrap()
+                .to_string()
+        }
     };
     let signal = (time, handle, string);
-    let out = unsafe { &mut *(data as *mut VecDeque<((u64, u32, String))>) };
-    out.push_back(signal);
+
+    data.out.push_back(signal);
 }
 
 extern "C" fn var_signal_change_callback(
-    data: *mut c_void,
+    data_ptr: *mut c_void,
     time: u64,
     handle: fst_sys::fstHandle,
     value: *const c_uchar,
@@ -257,20 +291,29 @@ extern "C" fn var_signal_change_callback(
     let bytes = unsafe { std::slice::from_raw_parts(value, len as usize) };
     let string: String = std::str::from_utf8(bytes).unwrap().to_string();
     let signal = (time, handle, string);
-    let out = unsafe { &mut *(data as *mut VecDeque<((u64, u32, String))>) };
-    out.push_back(signal);
+    let data = unsafe { &mut *(data_ptr as *mut CallbackData) };
+    let signal_idx = (handle - 1) as usize;
+    assert!(
+        !data.is_real[signal_idx],
+        "reals should never be variable length!"
+    );
+    data.out.push_back(signal);
 }
 
 fn diff_signals<R: std::io::Read + std::io::Seek>(
     our_reader: &mut FstReader<R>,
     mut exp_signals: VecDeque<(u64, u32, String)>,
 ) {
-    let check = |time: u64, handle: FstSignalHandle, value: &str| {
+    let check = |time: u64, handle: FstSignalHandle, value: FstSignalValue| {
         let (exp_time, exp_handle, exp_value) = exp_signals.pop_front().unwrap();
-        let actual = (time, handle.get_index() + 1, value);
-        let expected = (exp_time, exp_handle as usize, exp_value.as_str());
+        let actual_as_string = match value {
+            FstSignalValue::String(str) => str.to_string(),
+            FstSignalValue::Real(value) => format!("{value}"),
+        };
+        let actual = (time, handle.get_index() + 1, actual_as_string);
+        let expected = (exp_time, exp_handle as usize, exp_value);
         assert_eq!(actual, expected);
-        // println!("{actual:?}");
+        println!("{actual:?}");
     };
     let filter = FstFilter::all();
     our_reader.read_signals(&filter, check).unwrap();
@@ -292,10 +335,10 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 
     // compare hierarchy
     let exp_hierarchy = fst_sys_load_hierarchy(exp_handle);
-    diff_hierarchy(&mut our_reader, exp_hierarchy);
+    let is_real = diff_hierarchy(&mut our_reader, exp_hierarchy);
 
     // compare signals
-    let exp_signals = fst_sys_load_signals(exp_handle);
+    let exp_signals = fst_sys_load_signals(exp_handle, &is_real);
     diff_signals(&mut our_reader, exp_signals);
 
     // close C-library handle
@@ -387,6 +430,12 @@ fn diff_my_hdl_simple_memory() {
 #[ignore] // index out of bounds: the len is 4 but the index is 4
 fn diff_my_hdl_top() {
     run_diff_test("fsts/my-hdl/top.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // time delta is zero!
+fn diff_ncsim_ffdiv() {
+    run_diff_test("fsts/ncsim/ffdiv_32bit_tb.vcd.fst", &FstFilter::all());
 }
 
 #[test]

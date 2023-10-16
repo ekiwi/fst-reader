@@ -6,6 +6,6 @@ mod io;
 mod reader;
 mod types;
 
-pub use reader::{FstFilter, FstHeader, FstReader};
+pub use reader::{FstFilter, FstHeader, FstReader, FstSignalValue};
 
 pub use types::{FstHierarchyEntry, FstScopeType, FstSignalHandle, FstVarDirection, FstVarType};

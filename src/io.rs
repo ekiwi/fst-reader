@@ -498,6 +498,7 @@ pub(crate) fn write_geometry(
 //////////////// Blackout
 
 pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<BlackoutData>> {
+    let _section_length = read_u64(input)?;
     let (num_blackouts, _) = read_variant_u32(input)?;
     let mut blackouts = Vec::with_capacity(num_blackouts as usize);
     let mut current_blackout = 0u64;

@@ -519,7 +519,6 @@ fn diff_xilinx_isim_test1() {
 }
 
 #[test]
-#[ignore] // TODO: implement blackout
 fn diff_xilinx_isim_test2x2_regex22_string1() {
     run_diff_test(
         "fsts/xilinx_isim/test2x2_regex22_string1.vcd.fst",

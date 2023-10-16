@@ -370,6 +370,28 @@ fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
     }
 }
 
+#[inline]
+fn format_double_as_gtkwave_string(value: f64) -> String {
+    // this tries to emulate the formating behavior of the C++ FST implementation
+    // "%.16g"
+    let mut string = format!("{:.16}", value);
+    while string.ends_with("0") {
+        let mut chars = string.chars();
+        chars.next_back();
+        string = chars.as_str().to_string();
+    }
+    if string.ends_with(".") {
+        let mut chars = string.chars();
+        chars.next_back();
+        string = chars.as_str().to_string();
+    }
+    // patch nan
+    if string == "NaN" {
+        string = "nan".to_string();
+    };
+    string
+}
+
 impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R, F> {
     fn read_time_block(
         &mut self,
@@ -431,7 +453,6 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             let signal_length = self.meta.signals[idx].len();
             if self.filter.signals[idx] {
                 let signal_handle = FstSignalHandle::from_index(idx);
-                // we do not support a "process_mask" for now, will read all signals
                 match signal_length {
                     0 => {} // ignore since variable-length records have no initial value
                     len => {
@@ -443,8 +464,10 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                                 std::str::from_utf8(&value)?,
                             );
                         } else {
-                            let _value = read_f64(&mut byte_reader, self.meta.float_endian)?;
-                            todo!("add support for reals")
+                            let value = read_f64(&mut byte_reader, self.meta.float_endian)?;
+                            // TODO: return doubles not as string
+                            let string = format_double_as_gtkwave_string(value);
+                            (self.callback)(start_time, signal_handle, &string);
                         }
                     }
                 }
@@ -701,20 +724,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                             assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
                             let value = read_f64(&mut mu_slice, self.meta.float_endian)?;
                             // TODO: return doubles not as string
-                            // this tries to emulate the formating behavior of the C++ FST implementation
-                            // "%.16g"
-                            let mut string = format!("{:.16}", value);
-                            while string.ends_with("0") {
-                                let mut chars = string.chars();
-                                chars.next_back();
-                                string = chars.as_str().to_string();
-                            }
-                            if string.ends_with(".") {
-                                let mut chars = string.chars();
-                                chars.next_back();
-                                string = chars.as_str().to_string();
-                            }
-
+                            let string = format_double_as_gtkwave_string(value);
                             (self.callback)(*time, signal_handle, &string);
                             8
                         }

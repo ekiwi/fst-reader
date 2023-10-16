@@ -52,6 +52,9 @@ unsafe fn fst_sys_hierarchy_read_name(ptr: *const c_char, len: u32) -> String {
 fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
     let con = match tpe {
         fst_sys::fstScopeType_FST_ST_VCD_MODULE => "Module",
+        fst_sys::fstScopeType_FST_ST_VCD_TASK => "Task",
+        fst_sys::fstScopeType_FST_ST_VCD_FUNCTION => "Function",
+        fst_sys::fstScopeType_FST_ST_VCD_BEGIN => "Begin",
         other => todo!("scope type: {other}"),
     };
     con.to_string()
@@ -341,6 +344,49 @@ fn diff_gtkwave_perm_current() {
 #[test]
 fn diff_gtkwave_transaction() {
     run_diff_test("fsts/gtkwave-analyzer/transaction.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_icarus_CPU() {
+    run_diff_test("fsts/icarus/CPU.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_icarus_rv32_soc_tb() {
+    run_diff_test("fsts/icarus/rv32_soc_TB.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_icarus_test1() {
+    run_diff_test("fsts/icarus/test1.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_model_sim_clkdiv2n_tb() {
+    run_diff_test("fsts/model-sim/clkdiv2n_tb.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // time delta is zero!
+fn diff_model_sim_cpu_design() {
+    run_diff_test("fsts/model-sim/CPU_Design.msim.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // index out of bounds: the len is 17 but the index is 26
+fn diff_my_hdl_sigmoid_tb() {
+    run_diff_test("fsts/my-hdl/sigmoid_tb.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_my_hdl_simple_memory() {
+    run_diff_test("fsts/my-hdl/Simple_Memory.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // index out of bounds: the len is 4 but the index is 4
+fn diff_my_hdl_top() {
+    run_diff_test("fsts/my-hdl/top.vcd.fst", &FstFilter::all());
 }
 
 #[test]

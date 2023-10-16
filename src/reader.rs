@@ -335,8 +335,8 @@ impl<R: Read + Seek> HeaderReader<R> {
                 BlockType::Hierarchy => self.read_hierarchy(HierarchyCompression::ZLib)?,
                 BlockType::HierarchyLZ4 => self.read_hierarchy(HierarchyCompression::Lz4)?,
                 BlockType::HierarchyLZ4Duo => self.read_hierarchy(HierarchyCompression::Lz4Duo)?,
-                BlockType::GZipWrapper => todo!(),
-                BlockType::Skip => todo!(),
+                BlockType::GZipWrapper => panic!("GZip Wrapper should have been handled earlier!"),
+                BlockType::Skip => todo!("skip block"),
             };
         }
         Ok(())

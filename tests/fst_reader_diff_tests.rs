@@ -300,7 +300,7 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 }
 
 #[test]
-#[ignore]
+#[ignore] // index out of bounds: the len is 49 but the index is 60
 fn diff_aldec_spi_write() {
     run_diff_test("fsts/aldec/SPI_Write.vcd.fst", &FstFilter::all());
 }
@@ -311,8 +311,31 @@ fn diff_amaranth_up_counter() {
 }
 
 #[test]
+fn diff_ghdl_alu() {
+    run_diff_test("fsts/ghdl/alu.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_ghdl_idea() {
+    run_diff_test("fsts/ghdl/idea.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_ghdl_pcpu() {
+    run_diff_test("fsts/ghdl/pcpu.vcd.fst", &FstFilter::all());
+}
+
+#[test]
 fn diff_gtkwave_des() {
     run_diff_test("fsts/gtkwave-analyzer/des.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_gtkwave_perm_current() {
+    run_diff_test(
+        "fsts/gtkwave-analyzer/perm_current.vcd.fst",
+        &FstFilter::all(),
+    );
 }
 
 #[test]

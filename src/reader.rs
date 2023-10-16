@@ -643,10 +643,10 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
             .take(max_handle as usize)
             .enumerate()
         {
+            // was there a signal change?
             if *entry != 0 {
-                // was there a signal change?
+                // is the signal supposed to be included?
                 if self.filter.signals[signal_idx] {
-                    // is the signal supposed to be included?
                     // read all signal values
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
@@ -668,12 +668,13 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, &str)> DataReader<'a, R,
                     // remember at what time step we will read this signal
                     scatter_pointer[signal_idx] = tc_head[tdelta];
                     tc_head[tdelta] = signal_idx as u32 + 1; // index to handle
-                } else {
-                    // an entry of 0 means that the signal did not change in this block
-                    // add dummy values
-                    head_pointer.push(1234);
-                    length_remaining.push(1234);
                 }
+            }
+            // if there was no real value added, we add dummy values to ensure that we can
+            // index the Vec with the signal ID
+            if head_pointer.len() == signal_idx {
+                head_pointer.push(1234);
+                length_remaining.push(1234);
             }
         }
 

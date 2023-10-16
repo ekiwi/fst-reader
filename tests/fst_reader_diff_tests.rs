@@ -313,7 +313,7 @@ fn diff_signals<R: std::io::Read + std::io::Seek>(
         let actual = (time, handle.get_index() + 1, actual_as_string);
         let expected = (exp_time, exp_handle as usize, exp_value);
         assert_eq!(actual, expected);
-        println!("{actual:?}");
+        // println!("{actual:?}");
     };
     let filter = FstFilter::all();
     our_reader.read_signals(&filter, check).unwrap();
@@ -410,7 +410,6 @@ fn diff_model_sim_clkdiv2n_tb() {
 }
 
 #[test]
-#[ignore] // time delta is zero!
 fn diff_model_sim_cpu_design() {
     run_diff_test("fsts/model-sim/CPU_Design.msim.vcd.fst", &FstFilter::all());
 }
@@ -463,11 +462,81 @@ fn diff_riviera_pro_dump() {
 }
 
 #[test]
-fn diff_verilator_basic_tests_anon() {
+fn diff_systemc_waveform() {
+    run_diff_test("fsts/systemc/waveform.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_treadle_gcd() {
+    run_diff_test("fsts/treadle/GCD.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_vcs_apb_uvm_new() {
+    run_diff_test("fsts/vcs/Apb_slave_uvm_new.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_vcs_datapath_log() {
+    run_diff_test("fsts/vcs/datapath_log.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_vcs_processor() {
+    run_diff_test("fsts/vcs/processor.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_verilator_basic_test() {
     run_diff_test("fsts/verilator/basic_test.fst", &FstFilter::all());
 }
 
 #[test]
-fn diff_verilator_sv_data_types() {
+fn diff_verilator_many_sv_data_types() {
     run_diff_test("fsts/verilator/many_sv_datatypes.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_verilator_swerv1() {
+    run_diff_test("fsts/verilator/swerv1.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_verilator_vlt_dump() {
+    run_diff_test("fsts/verilator/vlt_dump.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_vivado_iladata() {
+    run_diff_test("fsts/vivado/iladata.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_xilinx_isim_test() {
+    run_diff_test("fsts/xilinx_isim/test.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_xilinx_isim_test1() {
+    run_diff_test("fsts/xilinx_isim/test1.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // TODO: implement blackout
+fn diff_xilinx_isim_test2x2_regex22_string1() {
+    run_diff_test(
+        "fsts/xilinx_isim/test2x2_regex22_string1.vcd.fst",
+        &FstFilter::all(),
+    );
+}
+
+#[test]
+fn diff_scope_with_comment() {
+    run_diff_test("fsts/scope_with_comment.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+#[ignore] // panics!
+fn diff_vcd_file_with_errors() {
+    run_diff_test("fsts/VCD_file_with_errors.vcd.fst", &FstFilter::all());
 }

@@ -231,6 +231,7 @@ fn uncompress_gzip_wrapper(
 struct MetaData {
     header: Header,
     signals: Vec<SignalInfo>,
+    blackouts: Vec<BlackoutData>,
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
     hierarchy_compression: HierarchyCompression,
@@ -243,6 +244,7 @@ struct HeaderReader<R: Read + Seek> {
     input: R,
     header: Option<Header>,
     signals: Option<Vec<SignalInfo>>,
+    blackouts: Option<Vec<BlackoutData>>,
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
     hierarchy: Option<(HierarchyCompression, u64)>,
@@ -254,6 +256,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             input,
             header: None,
             signals: None,
+            blackouts: None,
             data_sections: Vec::default(),
             float_endian: FloatingPointEndian::Little,
             hierarchy: None,
@@ -291,11 +294,6 @@ impl<R: Read + Seek> HeaderReader<R> {
             .seek(SeekFrom::Current((section_length as i64) - already_read))?)
     }
 
-    fn read_geometry(&mut self) -> Result<()> {
-        self.signals = Some(read_geometry(&mut self.input)?);
-        Ok(())
-    }
-
     fn read_hierarchy(&mut self, compression: HierarchyCompression) -> Result<()> {
         let file_offset = self.input.stream_position()?;
         // this is the data section
@@ -330,13 +328,20 @@ impl<R: Read + Seek> HeaderReader<R> {
                 BlockType::VcData => self.read_data(&block_tpe)?,
                 BlockType::VcDataDynamicAlias => self.read_data(&block_tpe)?,
                 BlockType::VcDataDynamicAlias2 => self.read_data(&block_tpe)?,
-                BlockType::Blackout => todo!("blackout"),
-                BlockType::Geometry => self.read_geometry()?,
+                BlockType::Blackout => {
+                    self.blackouts = Some(read_blackout(&mut self.input)?);
+                }
+                BlockType::Geometry => {
+                    self.signals = Some(read_geometry(&mut self.input)?);
+                }
                 BlockType::Hierarchy => self.read_hierarchy(HierarchyCompression::ZLib)?,
                 BlockType::HierarchyLZ4 => self.read_hierarchy(HierarchyCompression::Lz4)?,
                 BlockType::HierarchyLZ4Duo => self.read_hierarchy(HierarchyCompression::Lz4Duo)?,
                 BlockType::GZipWrapper => panic!("GZip Wrapper should have been handled earlier!"),
-                BlockType::Skip => todo!("skip block"),
+                BlockType::Skip => {
+                    let section_length = read_u64(&mut self.input)?;
+                    self.skip(section_length, 8)?;
+                }
             };
         }
         Ok(())
@@ -347,6 +352,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         let meta = MetaData {
             header: self.header.unwrap(),
             signals: self.signals.unwrap(),
+            blackouts: self.blackouts.unwrap_or_default(),
             data_sections: self.data_sections,
             float_endian: self.float_endian,
             hierarchy_compression: self.hierarchy.unwrap().0,

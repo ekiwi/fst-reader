@@ -495,6 +495,25 @@ pub(crate) fn write_geometry(
     Ok(())
 }
 
+//////////////// Blackout
+
+pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<BlackoutData>> {
+    let (num_blackouts, _) = read_variant_u32(input)?;
+    let mut blackouts = Vec::with_capacity(num_blackouts as usize);
+    let mut current_blackout = 0u64;
+    for ii in 0..num_blackouts {
+        let activity = read_u8(input)? != 0;
+        let delta = read_variant_u64(input)?;
+        current_blackout += delta;
+        let bo = BlackoutData {
+            time: current_blackout,
+            contains_activity: activity,
+        };
+        blackouts.push(bo);
+    }
+    Ok(blackouts)
+}
+
 //////////////// Hierarchy
 
 pub(crate) fn read_hierarchy_bytes(

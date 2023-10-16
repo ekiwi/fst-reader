@@ -244,6 +244,13 @@ impl SignalInfo {
     }
 }
 
+#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub(crate) struct BlackoutData {
+    pub(crate) time: u64,
+    pub(crate) contains_activity: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct DataSectionInfo {
     pub(crate) file_offset: u64, // points to section length

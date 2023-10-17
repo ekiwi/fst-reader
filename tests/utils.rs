@@ -29,12 +29,12 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
         } => {
             let names = mapping
                 .iter()
-                .map(|(v, n)| n.clone())
+                .map(|(_v, n)| n.clone())
                 .collect::<Vec<_>>()
                 .join(" ");
             let values = mapping
                 .iter()
-                .map(|(v, n)| v.clone())
+                .map(|(v, _n)| v.clone())
                 .collect::<Vec<_>>()
                 .join(" ");
             format!(

@@ -732,7 +732,14 @@ pub(crate) fn read_packed_signal_values(
                     compressed_length as usize,
                 )?
             }
-            ValueChangePackType::FastLz => todo!("FastLZ"),
+            ValueChangePackType::FastLz => {
+                let compressed_length = (len - skiplen) as u64;
+                crate::fastlz::decompress(
+                    input,
+                    compressed_length as usize,
+                    uncompressed_length as usize,
+                )?
+            }
             ValueChangePackType::Zlib => {
                 let compressed_length = len as u64;
                 // Important: for signals, we do not skip decompression,

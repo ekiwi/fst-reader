@@ -117,7 +117,7 @@ pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
 }
 
 #[inline]
-pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<u64> {
+pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<(u64, usize)> {
     let mut byte = [0u8; 1];
     let mut res = 0u64;
     for ii in 0..10 {
@@ -126,7 +126,7 @@ pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<u64> {
         let value = (byte[0] as u64) & 0x7f;
         res |= value << (7 * ii);
         if (byte[0] & 0x80) == 0 {
-            return Ok(res);
+            return Ok((res, ii + 1));
         }
     }
     Err(ReaderError {
@@ -504,7 +504,7 @@ pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Bl
     let mut current_blackout = 0u64;
     for ii in 0..num_blackouts {
         let activity = read_u8(input)? != 0;
-        let delta = read_variant_u64(input)?;
+        let (delta, _) = read_variant_u64(input)?;
         current_blackout += delta;
         let bo = BlackoutData {
             time: current_blackout,
@@ -539,7 +539,15 @@ pub(crate) fn read_hierarchy_bytes(
         HierarchyCompression::Lz4 => {
             read_lz4_compressed_bytes(input, uncompressed_length, compressed_length)?
         }
-        HierarchyCompression::Lz4Duo => todo!("Implement LZ4 Duo!"),
+        HierarchyCompression::Lz4Duo => {
+            // the length after the _first_ decompression
+            let (len, skiplen) = read_variant_u64(input)?;
+            let uncompressed_2_len = len as usize;
+            let lvl1 =
+                read_lz4_compressed_bytes(input, uncompressed_2_len, compressed_length - skiplen)?;
+            let mut lvl1_reader = lvl1.as_slice();
+            read_lz4_compressed_bytes(&mut lvl1_reader, uncompressed_length, uncompressed_2_len)?
+        }
     };
     assert_eq!(bytes.len(), uncompressed_length);
     Ok(bytes)
@@ -667,13 +675,14 @@ pub(crate) fn read_hierarchy_entry(
             let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
             let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
             let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
-            let arg = read_variant_u64(input)?;
+            let (arg, _) = read_variant_u64(input)?;
             match tpe {
                 AttributeType::Misc => {
                     let arg2 = if subtype == MiscType::SourceStem
                         || subtype == MiscType::SourceInstantiationStem
                     {
-                        Some(read_variant_u64(&mut name.as_bytes())?)
+                        let (value, _) = read_variant_u64(&mut name.as_bytes())?;
+                        Some(value)
                     } else {
                         None
                     };
@@ -760,7 +769,7 @@ mod tests {
             let mut buf = std::io::Cursor::new(vec![0u8; 24]);
             write_variant_u64(&mut buf, value).unwrap();
             buf.seek(SeekFrom::Start(0)).unwrap();
-            let read_value = read_variant_u64(&mut buf).unwrap();
+            let (read_value, _) = read_variant_u64(&mut buf).unwrap();
             assert_eq!(read_value, value);
         }
     }

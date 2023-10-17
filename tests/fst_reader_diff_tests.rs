@@ -391,6 +391,12 @@ fn diff_systemc_waveform() {
     run_diff_test("fsts/systemc/waveform.vcd.fst", &FstFilter::all());
 }
 
+// to generate this file we used a modified version of vcd2fst with a lower FST_HDR_FOURPACK_DUO_SIZE threshold
+#[test]
+fn diff_systemc_waveform_dual_lz4() {
+    run_diff_test("fsts/systemc/waveform.vcd.dual_lz4.fst", &FstFilter::all());
+}
+
 #[test]
 fn diff_treadle_gcd() {
     run_diff_test("fsts/treadle/GCD.vcd.fst", &FstFilter::all());

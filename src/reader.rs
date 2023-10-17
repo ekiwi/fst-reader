@@ -404,7 +404,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
         let mut time_val: u64 = 0; // running time counter
 
         for _ in 0..number_of_items {
-            let value = read_variant_u64(&mut byte_reader)?;
+            let (value, _) = read_variant_u64(&mut byte_reader)?;
             time_val += value;
             time_table.push(time_val);
         }
@@ -421,9 +421,9 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
     ) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let uncompressed_length = read_variant_u64(&mut self.input)?;
-        let compressed_length = read_variant_u64(&mut self.input)?;
-        let max_handle = read_variant_u64(&mut self.input)?;
+        let (uncompressed_length, _) = read_variant_u64(&mut self.input)?;
+        let (compressed_length, _) = read_variant_u64(&mut self.input)?;
+        let (max_handle, _) = read_variant_u64(&mut self.input)?;
         assert!(compressed_length <= section_length);
         let bytes = read_zlib_compressed_bytes(
             &mut self.input,
@@ -465,9 +465,9 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
     fn skip_frame(&mut self, section_start: u64) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let _uncompressed_length = read_variant_u64(&mut self.input)?;
-        let compressed_length = read_variant_u64(&mut self.input)?;
-        let _max_handle = read_variant_u64(&mut self.input)?;
+        let (_uncompressed_length, _) = read_variant_u64(&mut self.input)?;
+        let (compressed_length, _) = read_variant_u64(&mut self.input)?;
+        let (_max_handle, _) = read_variant_u64(&mut self.input)?;
         self.input
             .seek(SeekFrom::Current(compressed_length as i64))?;
         Ok(())
@@ -603,7 +603,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
         time_section_length: u64,
         time_table: &[u64],
     ) -> Result<()> {
-        let max_handle = read_variant_u64(&mut self.input)?;
+        let (max_handle, _) = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
         let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
 

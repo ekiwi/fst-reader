@@ -5,6 +5,7 @@
 
 use crate::types::*;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::fmt::format;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -135,12 +136,12 @@ pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<(u64, usize)
 }
 
 #[inline]
-pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> WriteResult<()> {
+pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> WriteResult<usize> {
     // often, the value is small
     if value <= 0x7f {
         let byte = [value as u8; 1];
         output.write_all(&byte)?;
-        return Ok(());
+        return Ok(1);
     }
 
     let mut bytes = Vec::with_capacity(10);
@@ -152,11 +153,11 @@ pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Writ
     }
     assert!(bytes.len() <= 10);
     output.write_all(&bytes)?;
-    Ok(())
+    Ok(bytes.len())
 }
 
 #[inline]
-pub(crate) fn write_variant_u32(output: &mut impl Write, value: u32) -> WriteResult<()> {
+pub(crate) fn write_variant_u32(output: &mut impl Write, value: u32) -> WriteResult<usize> {
     write_variant_u64(output, value as u64)
 }
 
@@ -212,6 +213,13 @@ pub(crate) fn read_c_str(input: &mut impl Read, max_len: usize) -> ReadResult<St
         }
     }
     Ok(String::from_utf8(bytes)?)
+}
+
+fn write_c_str(output: &mut impl Write, value: &str) -> WriteResult<()> {
+    let bytes = value.as_bytes();
+    output.write_all(&bytes)?;
+    write_u8(output, 0)?;
+    Ok(())
 }
 
 #[inline] // inline to specialize on length
@@ -623,6 +631,22 @@ fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchy
     })
 }
 
+fn enum_table_to_string(name: &str, mapping: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(name.len() + mapping.len() * 32 + 32);
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(&format!("{}", mapping.len()));
+    for (_value, name) in mapping {
+        out.push(' ');
+        out.push_str(name);
+    }
+    for (value, _name) in mapping {
+        out.push(' ');
+        out.push_str(value);
+    }
+    out
+}
+
 fn parse_misc_attribute(
     name: String,
     tpe: MiscType,
@@ -631,8 +655,8 @@ fn parse_misc_attribute(
 ) -> ReadResult<FstHierarchyEntry> {
     let res = match tpe {
         MiscType::Comment => FstHierarchyEntry::Comment { string: name },
-        MiscType::EnvVar => todo!("EnvVar Attribute"),
-        MiscType::SupVar => todo!("SupVar Attribute"),
+        MiscType::EnvVar => todo!("EnvVar Attribute"), // fstWriterSetEnvVar()
+        MiscType::SupVar => todo!("SupVar Attribute"), // fstWriterCreateVar2() (GHDL?)
         MiscType::PathName => FstHierarchyEntry::PathName { name, id: arg },
         MiscType::SourceStem => FstHierarchyEntry::SourceStem {
             is_instantiation: false,
@@ -644,7 +668,7 @@ fn parse_misc_attribute(
             path_id: arg2.unwrap(),
             line: arg,
         },
-        MiscType::ValueList => todo!("ValueList Attribute"),
+        MiscType::ValueList => todo!("ValueList Attribute"), // fstWriterSetValueList()
         MiscType::EnumTable => {
             if name.is_empty() {
                 FstHierarchyEntry::EnumTableRef { handle: arg }
@@ -657,6 +681,18 @@ fn parse_misc_attribute(
     Ok(res)
 }
 
+fn read_hierarchy_attribute_arg2_encoded_as_name(input: &mut impl Read) -> ReadResult<u64> {
+    let (value, _) = read_variant_u64(input)?;
+    let end_byte = read_u8(input)?;
+    assert_eq!(end_byte, 0, "expected to be zero terminated!");
+    Ok(value)
+}
+
+const HIERARCHY_TPE_VCD_SCOPE: u8 = 254;
+const HIERARCHY_TPE_VCD_UP_SCOPE: u8 = 255;
+const HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN: u8 = 252;
+const HIERARCHY_TPE_VCD_ATTRIBUTE_END: u8 = 253;
+
 pub(crate) fn read_hierarchy_entry(
     input: &mut impl Read,
     handle_count: &mut u32,
@@ -666,7 +702,7 @@ pub(crate) fn read_hierarchy_entry(
         Err(_) => return Ok(None),
     };
     let entry = match entry_tpe {
-        254 => {
+        HIERARCHY_TPE_VCD_SCOPE => {
             // VcdScope (ScopeType)
             let tpe = FstScopeType::try_from_primitive(read_u8(input)?)?;
             let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
@@ -705,25 +741,26 @@ pub(crate) fn read_hierarchy_entry(
                 is_alias,
             }
         }
-        255 => {
+        HIERARCHY_TPE_VCD_UP_SCOPE => {
             // VcdUpScope (ScopeType)
             FstHierarchyEntry::UpScope
         }
-        252 => {
+        HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN => {
             let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
             let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
-            let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
-            let (arg, _) = read_variant_u64(input)?;
             match tpe {
                 AttributeType::Misc => {
-                    let arg2 = if subtype == MiscType::SourceStem
-                        || subtype == MiscType::SourceInstantiationStem
-                    {
-                        let (value, _) = read_variant_u64(&mut name.as_bytes())?;
-                        Some(value)
-                    } else {
-                        None
+                    let (name, arg2) = match subtype {
+                        MiscType::SourceStem | MiscType::SourceInstantiationStem => {
+                            let arg2 = read_hierarchy_attribute_arg2_encoded_as_name(input)?;
+                            ("".to_string(), Some(arg2))
+                        }
+                        _ => {
+                            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+                            (name, None)
+                        }
                     };
+                    let (arg, _) = read_variant_u64(input)?;
                     parse_misc_attribute(name, subtype, arg, arg2)?
                 }
                 AttributeType::Array => todo!("ARRAY attributes"),
@@ -731,7 +768,7 @@ pub(crate) fn read_hierarchy_entry(
                 AttributeType::Pack => todo!("PACK attributes"),
             }
         }
-        253 => {
+        HIERARCHY_TPE_VCD_ATTRIBUTE_END => {
             // GenAttributeEnd (ScopeType)
             FstHierarchyEntry::AttributeEnd
         }
@@ -740,6 +777,152 @@ pub(crate) fn read_hierarchy_entry(
     };
 
     Ok(Some(entry))
+}
+
+fn write_hierarchy_attribute(
+    output: &mut impl Write,
+    tpe: AttributeType,
+    subtype: MiscType,
+    name: &str,
+    arg: u64,
+    arg2: Option<u64>,
+) -> WriteResult<()> {
+    write_u8(output, HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN)?;
+    write_u8(output, tpe as u8)?;
+    write_u8(output, subtype as u8)?;
+    let raw_name_bytes = match arg2 {
+        None => {
+            assert!(name.len() <= HIERARCHY_ATTRIBUTE_MAX_SIZE);
+            name.to_string().into_bytes()
+        }
+        Some(value) => {
+            assert!(name.is_empty(), "cannot have a name + an arg2!");
+            let mut buf = vec![0u8; 10];
+            let mut buf_writer: &mut [u8] = buf.as_mut();
+            let len = write_variant_u64(&mut buf_writer, value)?;
+            buf.truncate(len);
+            buf
+        }
+    };
+    output.write_all(&raw_name_bytes)?;
+    write_u8(output, 0)?; // zero terminate string/variant
+    write_variant_u64(output, arg)?;
+    Ok(())
+}
+
+pub(crate) fn write_hierarchy_entry(
+    output: &mut impl Write,
+    handle_count: &mut u32,
+    entry: &FstHierarchyEntry,
+) -> WriteResult<()> {
+    match entry {
+        FstHierarchyEntry::Scope {
+            tpe,
+            name,
+            component,
+        } => {
+            write_u8(output, HIERARCHY_TPE_VCD_SCOPE)?;
+            write_u8(output, *tpe as u8)?;
+            assert!(name.len() <= HIERARCHY_NAME_MAX_SIZE);
+            write_c_str(output, name)?;
+            assert!(component.len() <= HIERARCHY_NAME_MAX_SIZE);
+            write_c_str(output, component)?;
+        }
+        FstHierarchyEntry::UpScope => {
+            write_u8(output, HIERARCHY_TPE_VCD_UP_SCOPE)?;
+        }
+        FstHierarchyEntry::Var {
+            tpe,
+            direction,
+            name,
+            length,
+            handle,
+            is_alias,
+        } => {
+            write_u8(output, *tpe as u8)?;
+            write_u8(output, *direction as u8)?;
+            assert!(name.len() <= HIERARCHY_NAME_MAX_SIZE);
+            write_c_str(output, name)?;
+            let raw_length = if *tpe == FstVarType::Port {
+                3 * (*length) + 2
+            } else {
+                *length
+            };
+            write_variant_u32(output, raw_length)?;
+            if *is_alias {
+                write_variant_u32(output, handle.get_raw())?;
+            } else {
+                // sanity check handle
+                assert_eq!(handle.get_index(), *handle_count as usize);
+                *handle_count += 1;
+                // write no-alias
+                write_variant_u32(output, 0)?;
+            }
+        }
+        FstHierarchyEntry::PathName { name, id } => write_hierarchy_attribute(
+            output,
+            AttributeType::Misc,
+            MiscType::PathName,
+            name,
+            *id,
+            None,
+        )?,
+        FstHierarchyEntry::SourceStem {
+            is_instantiation,
+            path_id,
+            line,
+        } => {
+            let subtpe = if *is_instantiation {
+                MiscType::SourceInstantiationStem
+            } else {
+                MiscType::SourceStem
+            };
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Misc,
+                subtpe,
+                "",
+                *line,
+                Some(*path_id),
+            )?
+        }
+        FstHierarchyEntry::Comment { string } => write_hierarchy_attribute(
+            output,
+            AttributeType::Misc,
+            MiscType::Comment,
+            string,
+            0,
+            None,
+        )?,
+        FstHierarchyEntry::EnumTable {
+            name,
+            handle,
+            mapping,
+        } => {
+            let table_str = enum_table_to_string(name, mapping);
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Misc,
+                MiscType::EnumTable,
+                &table_str,
+                *handle,
+                None,
+            )?
+        }
+        FstHierarchyEntry::EnumTableRef { handle } => write_hierarchy_attribute(
+            output,
+            AttributeType::Misc,
+            MiscType::EnumTable,
+            "",
+            *handle,
+            None,
+        )?,
+        FstHierarchyEntry::AttributeEnd => {
+            write_u8(output, HIERARCHY_TPE_VCD_ATTRIBUTE_END)?;
+        }
+    }
+
+    Ok(())
 }
 
 //////////////// Vale Change Data
@@ -833,17 +1016,35 @@ mod tests {
         );
     }
 
+    /// makes sure that there are no zero bytes inside the string and that the max length is obeyed
+    fn is_valid_c_str(value: &str, max_len: usize) -> bool {
+        let string_bytes: &[u8] = value.as_bytes();
+        string_bytes.len() < max_len && !string_bytes.contains(&0u8)
+    }
+
     proptest! {
         #[test]
         fn test_write_c_str_fixed_length(string: String, max_len in 1 .. 400usize) {
-            let string_bytes: &[u8] = string.as_bytes();
-            prop_assume!(string_bytes.len() < max_len);
-            prop_assume!(!string_bytes.contains(&0u8));
+            prop_assume!(is_valid_c_str(&string, max_len));
             let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
             write_c_str_fixed_length(&mut buf, &string, max_len).unwrap();
             buf.seek(SeekFrom::Start(0)).unwrap();
             assert_eq!(
                 read_c_str_fixed_length(&mut buf, max_len).unwrap(),
+                string
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_write_c_str(string: String, max_len in 1 .. 400usize) {
+            prop_assume!(is_valid_c_str(&string, max_len));
+            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+            write_c_str(&mut buf, &string).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            assert_eq!(
+                read_c_str(&mut buf, max_len).unwrap(),
                 string
             );
         }
@@ -905,6 +1106,89 @@ mod tests {
             let actual = read_geometry(&mut buf).unwrap();
             assert_eq!(actual.len(), signals.len());
             assert_eq!(actual, signals);
+        }
+    }
+
+    /// ensures that no string contains zero bytes or is longer than max_len
+    fn hierarchy_entry_with_valid_c_strings(entry: &FstHierarchyEntry, max_len: usize) -> bool {
+        match entry {
+            FstHierarchyEntry::Scope {
+                name, component, ..
+            } => is_valid_c_str(name, max_len) && is_valid_c_str(component, max_len),
+            FstHierarchyEntry::UpScope => true,
+            FstHierarchyEntry::Var { name, .. } => is_valid_c_str(name, max_len),
+            FstHierarchyEntry::PathName { name, .. } => is_valid_c_str(name, max_len),
+            FstHierarchyEntry::SourceStem { .. } => true,
+            FstHierarchyEntry::Comment { string } => is_valid_c_str(string, max_len),
+            FstHierarchyEntry::EnumTable { name, mapping, .. } => {
+                is_valid_c_str(name, max_len)
+                    && mapping
+                        .iter()
+                        .all(|(k, v)| is_valid_c_str(k, max_len) && is_valid_c_str(v, max_len))
+            }
+            FstHierarchyEntry::EnumTableRef { .. } => true,
+            FstHierarchyEntry::AttributeEnd => true,
+        }
+    }
+
+    /// ensures that the mapping strings are non-empty and do not contain spaces
+    fn hierarchy_entry_with_valid_mapping(entry: &FstHierarchyEntry) -> bool {
+        match entry {
+            FstHierarchyEntry::EnumTable { mapping, .. } => mapping
+                .iter()
+                .all(|(k, v)| is_valid_mapping_str(k) && is_valid_mapping_str(v)),
+            _ => true,
+        }
+    }
+    fn is_valid_mapping_str(value: &str) -> bool {
+        !value.is_empty() && !value.contains(' ')
+    }
+
+    fn read_write_hierarchy_entry(entry: FstHierarchyEntry) {
+        // the handle count is only important if we are writing a non-aliased variable
+        let base_handle_count: u32 = match &entry {
+            FstHierarchyEntry::Var {
+                handle, is_alias, ..
+            } => {
+                if *is_alias {
+                    0
+                } else {
+                    handle.get_index() as u32
+                }
+            }
+            _ => 0,
+        };
+
+        let max_len = 1024 * 64;
+        let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+        let mut handle_count = base_handle_count;
+        write_hierarchy_entry(&mut buf, &mut handle_count, &entry).unwrap();
+        if base_handle_count > 0 {
+            assert_eq!(handle_count, base_handle_count + 1);
+        }
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        handle_count = base_handle_count;
+        let actual = read_hierarchy_entry(&mut buf, &mut handle_count)
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, entry);
+    }
+
+    #[test]
+    fn test_read_write_hierarchy_path_name_entry() {
+        let entry = FstHierarchyEntry::PathName {
+            id: 1,
+            name: "".to_string(),
+        };
+        read_write_hierarchy_entry(entry);
+    }
+
+    proptest! {
+        #[test]
+        fn test_prop_read_write_hierarchy_entry(entry: FstHierarchyEntry) {
+            prop_assume!(hierarchy_entry_with_valid_c_strings(&entry, HIERARCHY_NAME_MAX_SIZE));
+            prop_assume!(hierarchy_entry_with_valid_mapping(&entry));
+            read_write_hierarchy_entry(entry);
         }
     }
 }

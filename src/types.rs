@@ -14,7 +14,7 @@ use std::num::NonZeroU32;
 pub(crate) const HIERARCHY_NAME_MAX_SIZE: usize = 512;
 pub(crate) const HIERARCHY_ATTRIBUTE_MAX_SIZE: usize = 65536 + 4096;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct FstSignalHandle(NonZeroU32);
 
@@ -27,6 +27,9 @@ impl FstSignalHandle {
     }
     pub fn get_index(&self) -> usize {
         (self.0.get() - 1) as usize
+    }
+    pub(crate) fn get_raw(&self) -> u32 {
+        self.0.get()
     }
 }
 
@@ -71,7 +74,7 @@ pub(crate) enum BlockType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub enum FstScopeType {
     // VCD
@@ -145,7 +148,7 @@ pub enum FstVarType {
 }
 
 #[repr(u8)]
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub enum FstVarDirection {
     Implicit = 0,
@@ -259,7 +262,7 @@ pub(crate) struct DataSectionInfo {
     pub(crate) kind: DataSectionKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub enum FstHierarchyEntry {
     Scope {
@@ -275,10 +278,6 @@ pub enum FstHierarchyEntry {
         length: u32,
         handle: FstSignalHandle,
         is_alias: bool,
-    },
-    AttributeBegin {
-        name: String,
-        // TODO
     },
     PathName {
         /// this id is used by other attributes to refer to the path

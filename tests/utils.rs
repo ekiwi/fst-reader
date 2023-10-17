@@ -13,7 +13,6 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
         } => format!("Scope: {name} ({}) {component}", hierarchy_tpe_to_str(tpe)),
         FstHierarchyEntry::UpScope => "UpScope".to_string(),
         FstHierarchyEntry::Var { name, handle, .. } => format!("({handle}): {name}"),
-        FstHierarchyEntry::AttributeBegin { name } => format!("BeginAttr: {name}"),
         FstHierarchyEntry::AttributeEnd => "EndAttr".to_string(),
         FstHierarchyEntry::PathName { name, id } => format!("PathName: {id} -> {name}"),
         FstHierarchyEntry::SourceStem {

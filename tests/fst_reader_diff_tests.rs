@@ -6,7 +6,9 @@ use fst_native::*;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
 use std::fs::File;
-use std::future::pending;
+
+mod utils;
+use utils::hierarchy_to_str;
 
 fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
     unsafe {
@@ -119,80 +121,6 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
         fst_sys::fstHierType_FST_HT_ATTREND => "EndAttr".to_string(),
         other => todo!("htype={other}"),
     }
-}
-
-fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
-    match entry {
-        FstHierarchyEntry::Scope {
-            name,
-            tpe,
-            component,
-        } => format!("Scope: {name} ({}) {component}", hierarchy_tpe_to_str(tpe)),
-        FstHierarchyEntry::UpScope => "UpScope".to_string(),
-        FstHierarchyEntry::Var { name, handle, .. } => format!("({handle}): {name}"),
-        FstHierarchyEntry::AttributeBegin { name } => format!("BeginAttr: {name}"),
-        FstHierarchyEntry::AttributeEnd => "EndAttr".to_string(),
-        FstHierarchyEntry::PathName { name, id } => format!("PathName: {id} -> {name}"),
-        FstHierarchyEntry::SourceStem {
-            is_instantiation,
-            path_id,
-            line,
-        } => format!("SourceStem:: {is_instantiation}, {path_id}, {line}"),
-        FstHierarchyEntry::Comment { string } => format!("Comment: {string}"),
-        FstHierarchyEntry::EnumTable {
-            name,
-            handle,
-            mapping,
-        } => {
-            let names = mapping
-                .iter()
-                .map(|(v, n)| n.clone())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let values = mapping
-                .iter()
-                .map(|(v, n)| v.clone())
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!(
-                "EnumTable: {name} {} {names} {values} ({handle})",
-                mapping.len()
-            )
-        }
-        FstHierarchyEntry::EnumTableRef { handle } => format!("EnumTableRef: {handle}"),
-    }
-}
-
-fn hierarchy_tpe_to_str(tpe: &FstScopeType) -> String {
-    let con = match tpe {
-        FstScopeType::Module => "Module",
-        FstScopeType::Task => "Task",
-        FstScopeType::Function => "Function",
-        FstScopeType::Begin => "Begin",
-        FstScopeType::Fork => "Fork",
-        FstScopeType::Generate => "Generate",
-        FstScopeType::Struct => "Struct",
-        FstScopeType::Union => "Union",
-        FstScopeType::Class => "Class",
-        FstScopeType::Interface => "Interface",
-        FstScopeType::Package => "Package",
-        FstScopeType::Program => "Program",
-        FstScopeType::VhdlArchitecture => "VhdlArchitecture",
-        FstScopeType::VhdlProcedure => "VhdlProcedure",
-        FstScopeType::VhdlFunction => "VhdlFunction",
-        FstScopeType::VhdlRecord => "VhdlRecord",
-        FstScopeType::VhdlProcess => "VhdlProcess",
-        FstScopeType::VhdlBlock => "VhdlBlock",
-        FstScopeType::VhdlForGenerate => "VhdlForGenerate",
-        FstScopeType::VhdlIfGenerate => "VhdlIfGenerate",
-        FstScopeType::VhdlGenerate => "VhdlGenerate",
-        FstScopeType::VhdlPackage => "VhdlPackage",
-        FstScopeType::AttributeBegin => "AttributeBegin",
-        FstScopeType::AttributeEnd => "AttributeEnd",
-        FstScopeType::VcdScope => "VcdScope",
-        FstScopeType::VcdUpScope => "VcdUpScope",
-    };
-    con.to_string()
 }
 
 fn diff_hierarchy<R: std::io::Read + std::io::Seek>(
@@ -456,12 +384,6 @@ fn diff_questa_sim_test() {
 #[test]
 fn diff_riviera_pro_dump() {
     run_diff_test("fsts/riviera-pro/dump.vcd.fst", &FstFilter::all());
-}
-
-#[test]
-#[ignore] // GTKWave actually crashes on this input, even though it was created by vcd2fst from GTKWave
-fn diff_sigrok() {
-    run_diff_test("fsts/sigrok/libsigrok.vcd.fst", &FstFilter::all());
 }
 
 #[test]

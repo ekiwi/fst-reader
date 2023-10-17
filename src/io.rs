@@ -503,11 +503,13 @@ pub(crate) fn write_geometry(
 //////////////// Blackout
 
 pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<BlackoutData>> {
-    let _section_length = read_u64(input)?;
+    // remember start for later sanity check
+    let start = input.stream_position()?;
+    let section_length = read_u64(input)?;
     let (num_blackouts, _) = read_variant_u32(input)?;
     let mut blackouts = Vec::with_capacity(num_blackouts as usize);
     let mut current_blackout = 0u64;
-    for ii in 0..num_blackouts {
+    for _ in 0..num_blackouts {
         let activity = read_u8(input)? != 0;
         let (delta, _) = read_variant_u64(input)?;
         current_blackout += delta;
@@ -517,6 +519,8 @@ pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Bl
         };
         blackouts.push(bo);
     }
+    let end = input.stream_position()?;
+    assert_eq!(start + section_length, end);
     Ok(blackouts)
 }
 
@@ -539,6 +543,12 @@ pub(crate) fn write_blackout(
         last_blackout = blackout.time;
         write_variant_u64(output, delta)?;
     }
+
+    // fix section length
+    let end = output.stream_position()?;
+    output.seek(SeekFrom::Start(start))?;
+    write_u64(output, end - start)?;
+    output.seek(SeekFrom::Start(end))?;
 
     Ok(())
 }

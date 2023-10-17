@@ -156,6 +156,11 @@ pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Writ
 }
 
 #[inline]
+pub(crate) fn write_variant_u32(output: &mut impl Write, value: u32) -> WriteResult<()> {
+    write_variant_u64(output, value as u64)
+}
+
+#[inline]
 pub(crate) fn read_u64(input: &mut impl Read) -> ReadResult<u64> {
     let mut buf = [0u8; 8];
     input.read_exact(&mut buf)?;
@@ -515,6 +520,29 @@ pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Bl
     Ok(blackouts)
 }
 
+pub(crate) fn write_blackout(
+    output: &mut (impl Write + Seek),
+    blackouts: &[BlackoutData],
+) -> WriteResult<()> {
+    // remember start to fix the section length afterwards
+    let start = output.stream_position()?;
+    write_u64(output, 0)?; // dummy section length
+
+    let num_blackouts = blackouts.len() as u32;
+    write_variant_u32(output, num_blackouts)?;
+
+    let mut last_blackout = 0u64;
+    for blackout in blackouts {
+        let activity_byte = if blackout.contains_activity { 1 } else { 0 };
+        write_u8(output, activity_byte)?;
+        let delta = blackout.time - last_blackout;
+        last_blackout = blackout.time;
+        write_variant_u64(output, delta)?;
+    }
+
+    Ok(())
+}
+
 //////////////// Hierarchy
 
 pub(crate) fn read_hierarchy_bytes(
@@ -837,6 +865,23 @@ mod tests {
             buf.seek(SeekFrom::Start(0)).unwrap();
             let uncompressed = read_zlib_compressed_bytes(&mut buf, bytes.len() as u64, compressed_len as u64, allow_uncompressed).unwrap();
             assert_eq!(uncompressed, bytes);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_read_write_blackout(mut blackouts: Vec<BlackoutData>) {
+            // blackout times must be in increasing order => sort
+            blackouts.sort_by(|a, b| a.time.cmp(&b.time));
+
+            // actual test
+            let max_len = blackouts.len() * 5 + 3 * 8;
+            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+            write_blackout(&mut buf, &blackouts).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            let actual = read_blackout(&mut buf).unwrap();
+            assert_eq!(actual.len(), blackouts.len());
+            assert_eq!(actual, blackouts);
         }
     }
 

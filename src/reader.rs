@@ -5,15 +5,15 @@
 use crate::io::*;
 use crate::types::*;
 use std::cmp::Ordering;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
-pub struct FstReader<R: Read + Seek> {
+pub struct FstReader<R: BufRead + Seek> {
     input: InputVariant<R>,
     meta: MetaData,
 }
 
-enum InputVariant<R: Read + Seek> {
+enum InputVariant<R: BufRead + Seek> {
     Original(R),
     Uncompressed(BufReader<std::fs::File>),
 }
@@ -74,7 +74,7 @@ pub struct FstHeader {
     pub date: String,
 }
 
-impl<R: Read + Seek> FstReader<R> {
+impl<R: BufRead + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
     pub fn open(mut input: R) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;

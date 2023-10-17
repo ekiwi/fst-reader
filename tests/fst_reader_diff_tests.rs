@@ -123,7 +123,7 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
     }
 }
 
-fn diff_hierarchy<R: std::io::Read + std::io::Seek>(
+fn diff_hierarchy<R: std::io::BufRead + std::io::Seek>(
     our_reader: &mut FstReader<R>,
     mut exp_hierarchy: VecDeque<String>,
 ) -> Vec<bool> {
@@ -228,7 +228,7 @@ extern "C" fn var_signal_change_callback(
     data.out.push_back(signal);
 }
 
-fn diff_signals<R: std::io::Read + std::io::Seek>(
+fn diff_signals<R: std::io::BufRead + std::io::Seek>(
     our_reader: &mut FstReader<R>,
     mut exp_signals: VecDeque<(u64, u32, String)>,
 ) {
@@ -254,7 +254,7 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 
     // open file with our library
     let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
-    let mut our_reader = FstReader::open(our_f).unwrap();
+    let mut our_reader = FstReader::open(std::io::BufReader::new(our_f)).unwrap();
 
     // compare header
     let exp_header = fst_sys_load_header(exp_handle);

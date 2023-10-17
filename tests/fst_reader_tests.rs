@@ -6,19 +6,19 @@
 // and thus we cannot compare.
 
 use fst_native::*;
-use std::io::{Read, Seek};
+use std::io::{BufRead, Seek};
 
 mod utils;
 use utils::hierarchy_to_str;
 
 fn run_load_test(filename: &str, filter: &FstFilter) {
     let f = std::fs::File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
-    let mut reader = FstReader::open(f).unwrap();
+    let mut reader = FstReader::open(std::io::BufReader::new(f)).unwrap();
 
     load_header(&mut reader);
 }
 
-fn load_header<R: Read + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
+fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
     let mut is_real = Vec::new();
     let mut hierarchy = Vec::new();
     let foo = |entry: FstHierarchyEntry| {

@@ -5,7 +5,6 @@
 
 use crate::types::*;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use std::fmt::format;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -563,6 +562,8 @@ pub(crate) fn write_blackout(
 
 //////////////// Hierarchy
 
+const HIERARCHY_GZIP_COMPRESSION_LEVEL: flate2::Compression = flate2::Compression::best();
+
 pub(crate) fn read_hierarchy_bytes(
     input: &mut (impl Read + Seek),
     compression: HierarchyCompression,
@@ -575,7 +576,7 @@ pub(crate) fn read_hierarchy_bytes(
         HierarchyCompression::ZLib => {
             let start = input.stream_position().unwrap();
             let mut d = flate2::read::GzDecoder::new(input);
-            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
+            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length);
             d.read_to_end(&mut uncompressed)?;
             // the decoder often reads more bytes than it should, we fix this here
             d.into_inner()
@@ -588,19 +589,54 @@ pub(crate) fn read_hierarchy_bytes(
         HierarchyCompression::Lz4Duo => {
             // the length after the _first_ decompression
             let (len, skiplen) = read_variant_u64(input)?;
-            let uncompressed_2_len = len as usize;
-            let lvl1 =
-                read_lz4_compressed_bytes(input, uncompressed_2_len, compressed_length - skiplen)?;
+            let lvl1_len = len as usize;
+            let lvl1 = read_lz4_compressed_bytes(input, lvl1_len, compressed_length - skiplen)?;
             let mut lvl1_reader = lvl1.as_slice();
-            read_lz4_compressed_bytes(&mut lvl1_reader, uncompressed_length, uncompressed_2_len)?
+            read_lz4_compressed_bytes(&mut lvl1_reader, uncompressed_length, lvl1_len)?
         }
     };
     assert_eq!(bytes.len(), uncompressed_length);
     Ok(bytes)
 }
 
-pub(crate) fn write_hierarchy(output: &mut (impl Write + Seek)) -> WriteResult<()> {
-    todo!();
+pub(crate) fn write_hierarchy_bytes(
+    output: &mut (impl Write + Seek),
+    compression: HierarchyCompression,
+    bytes: &[u8],
+) -> WriteResult<()> {
+    // remember start to fix the section length afterwards
+    let start = output.stream_position()?;
+    write_u64(output, 0)?; // dummy section length
+    let uncompressed_length = bytes.len() as u64;
+    write_u64(output, uncompressed_length)?;
+
+    let out2 = match compression {
+        HierarchyCompression::ZLib => {
+            let mut e = flate2::write::GzEncoder::new(output, HIERARCHY_GZIP_COMPRESSION_LEVEL);
+            e.write_all(bytes)?;
+            e.finish()?
+        }
+        HierarchyCompression::Lz4 => {
+            let compressed = lz4_flex::compress(bytes);
+            output.write_all(&compressed)?;
+            output
+        }
+        HierarchyCompression::Lz4Duo => {
+            let compressed_lvl1 = lz4_flex::compress(bytes);
+            let lvl1_len = compressed_lvl1.len() as u64;
+            write_variant_u64(output, lvl1_len)?;
+            let compressed_lvl2 = lz4_flex::compress(&compressed_lvl1);
+            output.write_all(&compressed_lvl2)?;
+            output
+        }
+    };
+
+    // fix section length
+    let end = out2.stream_position()?;
+    out2.seek(SeekFrom::Start(start))?;
+    write_u64(out2, end - start)?;
+    out2.seek(SeekFrom::Start(end))?;
+    Ok(())
 }
 
 fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchyEntry> {
@@ -1189,6 +1225,18 @@ mod tests {
             prop_assume!(hierarchy_entry_with_valid_c_strings(&entry, HIERARCHY_NAME_MAX_SIZE));
             prop_assume!(hierarchy_entry_with_valid_mapping(&entry));
             read_write_hierarchy_entry(entry);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_prop_read_write_hierarchy_bytes(tpe: HierarchyCompression, bytes: Vec<u8>) {
+            let max_len = std::cmp::max(64, bytes.len() + 3 * 8);
+            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+            write_hierarchy_bytes(&mut buf, tpe, &bytes).unwrap();
+            buf.seek(SeekFrom::Start(0)).unwrap();
+            let actual = read_hierarchy_bytes(&mut buf, tpe).unwrap();
+            assert_eq!(actual, bytes);
         }
     }
 }

@@ -304,6 +304,7 @@ pub enum FstHierarchyEntry {
 }
 
 #[derive(Debug, Copy, Clone)]
+#[cfg_attr(test, derive(Arbitrary))]
 pub(crate) enum HierarchyCompression {
     ZLib,
     Lz4,

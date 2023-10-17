@@ -1180,6 +1180,17 @@ mod tests {
         !value.is_empty() && !value.contains(' ')
     }
 
+    /// ensures that ports are not too wide
+    fn hierarchy_entry_with_valid_port_width(entry: &FstHierarchyEntry) -> bool {
+        match entry {
+            FstHierarchyEntry::Var { tpe, length, .. } => match tpe {
+                FstVarType::Port => *length < (u32::MAX / 3) - 2,
+                _ => true,
+            },
+            _ => true,
+        }
+    }
+
     fn read_write_hierarchy_entry(entry: FstHierarchyEntry) {
         // the handle count is only important if we are writing a non-aliased variable
         let base_handle_count: u32 = match &entry {
@@ -1224,6 +1235,7 @@ mod tests {
         fn test_prop_read_write_hierarchy_entry(entry: FstHierarchyEntry) {
             prop_assume!(hierarchy_entry_with_valid_c_strings(&entry, HIERARCHY_NAME_MAX_SIZE));
             prop_assume!(hierarchy_entry_with_valid_mapping(&entry));
+            prop_assume!(hierarchy_entry_with_valid_port_width(&entry));
             read_write_hierarchy_entry(entry);
         }
     }

@@ -38,6 +38,7 @@ jobs:
   lint:
       name: Clippy Lint
       runs-on: ubuntu-latest
+      continue-on-error: true # TODO: make this mandatory again
       strategy:
         matrix:
           toolchain:

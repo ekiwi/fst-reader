@@ -1045,7 +1045,7 @@ pub(crate) fn read_time_block(
 pub(crate) fn write_time_block(
     output: &mut (impl Write + Seek),
     compression: Option<flate2::Compression>,
-    table: &TimeTable,
+    table: &[u64],
 ) -> WriteResult<()> {
     // write data
     let (uncompressed_len, compressed_len, out2) = match compression {
@@ -1056,7 +1056,15 @@ pub(crate) fn write_time_block(
             let out2 = e.finish()?;
             let end = out2.stream_position()?;
             let compressed_len = end - start;
-            (uncompressed_len, compressed_len, out2)
+
+            // important: if the compression does not work, we need to save the data uncompressed
+            if compressed_len >= uncompressed_len {
+                out2.seek(SeekFrom::Start(start))?; // go back to start
+                let len = write_time_table_data(out2, table)? as u64;
+                (len, len, out2)
+            } else {
+                (uncompressed_len, compressed_len, out2)
+            }
         }
         None => {
             let len = write_time_table_data(output, table)? as u64;
@@ -1070,12 +1078,41 @@ pub(crate) fn write_time_block(
     Ok(())
 }
 
-fn write_time_table_data(output: &mut impl Write, table: &TimeTable) -> WriteResult<usize> {
+fn write_time_table_data(output: &mut impl Write, table: &[u64]) -> WriteResult<usize> {
     let mut total_len = 0;
+    let mut prev_time = 0u64;
     for time in table {
-        total_len += write_variant_u64(output, *time)?;
+        let delta = *time - prev_time;
+        prev_time = *time;
+        total_len += write_variant_u64(output, delta)?;
     }
     Ok(total_len)
+}
+
+pub(crate) fn read_frame<'a>(
+    input: &mut (impl Read + Seek),
+    section_start: u64,
+    section_length: u64,
+    signals: &'a [SignalInfo],
+    signal_filter: &'a BitMask,
+    float_endian: FloatingPointEndian,
+) -> ReadResult<FrameReader<'a>> {
+    // we skip the section header (section_length, start_time, end_time, ???)
+    input.seek(SeekFrom::Start(section_start + 4 * 8))?;
+    let (uncompressed_length, _) = read_variant_u64(input)?;
+    let (compressed_length, _) = read_variant_u64(input)?;
+    let (max_handle, _) = read_variant_u64(input)?;
+    assert!(compressed_length <= section_length);
+    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+    let reader = FrameReader {
+        signals,
+        signal_filter,
+        float_endian,
+        bytes: std::io::Cursor::new(bytes),
+        idx: 0,
+        signal_count: max_handle as usize,
+    };
+    Ok(reader)
 }
 
 pub(crate) struct FrameReader<'a> {
@@ -1138,32 +1175,6 @@ impl<'a> Iterator for FrameReader<'a> {
         }
         None // done
     }
-}
-
-pub(crate) fn read_frame<'a>(
-    input: &mut (impl Read + Seek),
-    section_start: u64,
-    section_length: u64,
-    signals: &'a [SignalInfo],
-    signal_filter: &'a BitMask,
-    float_endian: FloatingPointEndian,
-) -> ReadResult<FrameReader<'a>> {
-    // we skip the section header (section_length, start_time, end_time, ???)
-    input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-    let (uncompressed_length, _) = read_variant_u64(input)?;
-    let (compressed_length, _) = read_variant_u64(input)?;
-    let (max_handle, _) = read_variant_u64(input)?;
-    assert!(compressed_length <= section_length);
-    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
-    let reader = FrameReader {
-        signals,
-        signal_filter,
-        float_endian,
-        bytes: std::io::Cursor::new(bytes),
-        idx: 0,
-        signal_count: max_handle as usize,
-    };
-    Ok(reader)
 }
 
 #[cfg(test)]
@@ -1412,6 +1423,39 @@ mod tests {
             buf.seek(SeekFrom::Start(0)).unwrap();
             let actual = read_hierarchy_bytes(&mut buf, tpe).unwrap();
             assert_eq!(actual, bytes);
+        }
+    }
+
+    fn read_write_time_table(mut table: Vec<u64>, compressed: bool) {
+        // the table has to be sorted since we are computing and saving time deltas
+        table.sort();
+        let max_len = std::cmp::max(64, table.len() * 8 + 3 * 8);
+        let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+        let comp = if compressed {
+            Some(flate2::Compression::best())
+        } else {
+            None
+        };
+        write_time_block(&mut buf, comp, &table).unwrap();
+        let section_start = 0u64;
+        let section_length = buf.stream_position().unwrap();
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        let (actual_len, actual_table) =
+            read_time_block(&mut buf, section_start, section_length).unwrap();
+        assert_eq!(actual_len, section_length);
+        assert_eq!(actual_table, table);
+    }
+
+    #[test]
+    fn test_read_write_time_table_uncompressed() {
+        let table = vec![1, 0];
+        read_write_time_table(table, false);
+    }
+
+    proptest! {
+        #[test]
+        fn test_prop_read_write_time_table(table: Vec<u64>, compressed: bool) {
+            read_write_time_table(table, compressed);
         }
     }
 }

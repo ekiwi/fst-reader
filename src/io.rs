@@ -4,6 +4,7 @@
 // Contains basic read and write operations for FST files.
 
 use crate::types::*;
+use crate::FstSignalValue;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -972,7 +973,7 @@ fn print_python_bytes(bytes: &[u8]) {
     println!("\"");
 }
 
-pub(crate) fn read_packed_signal_values(
+pub(crate) fn read_packed_signal_value_bytes(
     input: &mut (impl Read + Seek),
     len: u32,
     tpe: ValueChangePackType,
@@ -1010,6 +1011,125 @@ pub(crate) fn read_packed_signal_values(
         let bytes = read_bytes(input, dest_length as usize)?;
         Ok(bytes)
     }
+}
+
+type TimeTable = Vec<u64>;
+
+pub(crate) fn read_time_block(
+    input: &mut (impl Read + Seek),
+    section_start: u64,
+    section_length: u64,
+) -> ReadResult<(u64, TimeTable)> {
+    // the time block meta data is in the last 24 bytes at the end of the section
+    input.seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
+    let uncompressed_length = read_u64(input)?;
+    let compressed_length = read_u64(input)?;
+    let number_of_items = read_u64(input)?;
+    assert!(compressed_length <= section_length);
+
+    // now that we know how long the block actually is, we can go back to it
+    input.seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
+    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+    let mut byte_reader: &[u8] = &bytes;
+    let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
+    let mut time_val: u64 = 0; // running time counter
+
+    for _ in 0..number_of_items {
+        let (value, _) = read_variant_u64(&mut byte_reader)?;
+        time_val += value;
+        time_table.push(time_val);
+    }
+
+    let time_section_length = compressed_length + 3 * 8;
+    Ok((time_section_length, time_table))
+}
+
+pub(crate) struct FrameReader<'a> {
+    signals: &'a [SignalInfo],
+    signal_filter: &'a BitMask,
+    float_endian: FloatingPointEndian,
+    bytes: std::io::Cursor<Vec<u8>>,
+    idx: usize,
+    signal_count: usize, // aka max_handle
+}
+
+impl<'a> Iterator for FrameReader<'a> {
+    type Item = ReadResult<(FstSignalHandle, FstSignalValue)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let start_idx = self.idx;
+        for idx in start_idx..self.signal_count {
+            let signal_length = self.signals[idx].len();
+            if self.signal_filter[idx] {
+                let signal_handle = FstSignalHandle::from_index(idx);
+                match signal_length {
+                    0 => {} // ignore since variable-length records have no initial value
+                    len => {
+                        if !self.signals[idx].is_real() {
+                            let bytes = match read_bytes(&mut self.bytes, len as usize) {
+                                Ok(value) => value,
+                                Err(e) => return Some(Err(e)),
+                            };
+                            let value = match String::from_utf8(bytes) {
+                                Ok(value) => value,
+                                Err(e) => {
+                                    return Some(Err(ReaderError {
+                                        kind: ReaderErrorKind::StringParse2(e),
+                                    }))
+                                }
+                            };
+                            self.idx = idx + 1; // remember next idx
+                            return Some(Ok((signal_handle, FstSignalValue::String(value))));
+                        } else {
+                            let value = match read_f64(&mut self.bytes, self.float_endian) {
+                                Ok(value) => value,
+                                Err(e) => return Some(Err(e)),
+                            };
+                            self.idx = idx + 1; // remember next idx
+                            return Some(Ok((signal_handle, FstSignalValue::Real(value))));
+                        }
+                    }
+                }
+            } else {
+                // skip
+                match self.bytes.seek(SeekFrom::Current(signal_length as i64)) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Some(Err(ReaderError {
+                            kind: ReaderErrorKind::IO(e),
+                        }))
+                    }
+                }
+            }
+        }
+        None // done
+    }
+}
+
+pub(crate) fn read_frame<'a>(
+    input: &mut (impl Read + Seek),
+    section_start: u64,
+    section_length: u64,
+    signals: &'a [SignalInfo],
+    signal_filter: &'a BitMask,
+    float_endian: FloatingPointEndian,
+) -> ReadResult<FrameReader<'a>> {
+    // we skip the section header (section_length, start_time, end_time, ???)
+    input.seek(SeekFrom::Start(section_start + 4 * 8))?;
+    let (uncompressed_length, _) = read_variant_u64(input)?;
+    let (compressed_length, _) = read_variant_u64(input)?;
+    let (max_handle, _) = read_variant_u64(input)?;
+    assert!(compressed_length <= section_length);
+    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+    let reader = FrameReader {
+        signals,
+        signal_filter,
+        float_endian,
+        bytes: std::io::Cursor::new(bytes),
+        idx: 0,
+        signal_count: max_handle as usize,
+    };
+    Ok(reader)
 }
 
 #[cfg(test)]

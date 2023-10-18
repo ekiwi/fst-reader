@@ -156,8 +156,8 @@ impl<R: BufRead + Seek> FstReader<R> {
     }
 }
 
-pub enum FstSignalValue<'a> {
-    String(&'a str),
+pub enum FstSignalValue {
+    String(String),
     Real(f64),
 }
 
@@ -260,13 +260,6 @@ impl<R: Read + Seek> HeaderReader<R> {
             data_sections: Vec::default(),
             float_endian: FloatingPointEndian::Little,
             hierarchy: None,
-        }
-    }
-
-    fn header_incomplete(&self) -> bool {
-        match &self.header {
-            None => true,
-            Some(h) => h.start_time == 0 && h.end_time == 0,
         }
     }
 
@@ -377,91 +370,6 @@ fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
 }
 
 impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'a, R, F> {
-    fn read_time_block(
-        &mut self,
-        section_start: u64,
-        section_length: u64,
-    ) -> Result<(u64, Vec<u64>)> {
-        // the time block meta data is in the last 24 bytes at the end of the section
-        self.input
-            .seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
-        let uncompressed_length = read_u64(self.input)?;
-        let compressed_length = read_u64(&mut self.input)?;
-        let number_of_items = read_u64(&mut self.input)?;
-        assert!(compressed_length <= section_length);
-
-        // now that we know how long the block actually is, we can go back to it
-        self.input
-            .seek(SeekFrom::Current(-(3 * 8) - (compressed_length as i64)))?;
-        let bytes = read_zlib_compressed_bytes(
-            &mut self.input,
-            uncompressed_length,
-            compressed_length,
-            true,
-        )?;
-        let mut byte_reader: &[u8] = &bytes;
-        let mut time_table: Vec<u64> = Vec::with_capacity(number_of_items as usize);
-        let mut time_val: u64 = 0; // running time counter
-
-        for _ in 0..number_of_items {
-            let (value, _) = read_variant_u64(&mut byte_reader)?;
-            time_val += value;
-            time_table.push(time_val);
-        }
-
-        let time_section_length = compressed_length + 3 * 8;
-        Ok((time_section_length, time_table))
-    }
-
-    fn read_frame(
-        &mut self,
-        section_start: u64,
-        section_length: u64,
-        start_time: u64,
-    ) -> Result<()> {
-        // we skip the section header (section_length, start_time, end_time, ???)
-        self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let (uncompressed_length, _) = read_variant_u64(&mut self.input)?;
-        let (compressed_length, _) = read_variant_u64(&mut self.input)?;
-        let (max_handle, _) = read_variant_u64(&mut self.input)?;
-        assert!(compressed_length <= section_length);
-        let bytes = read_zlib_compressed_bytes(
-            &mut self.input,
-            uncompressed_length,
-            compressed_length,
-            true,
-        )?;
-
-        let mut byte_reader: &[u8] = &bytes;
-        for idx in 0..(max_handle as usize) {
-            let signal_length = self.meta.signals[idx].len();
-            if self.filter.signals[idx] {
-                let signal_handle = FstSignalHandle::from_index(idx);
-                match signal_length {
-                    0 => {} // ignore since variable-length records have no initial value
-                    len => {
-                        if !self.meta.signals[idx].is_real() {
-                            let value = read_bytes(&mut byte_reader, len as usize)?;
-                            (self.callback)(
-                                start_time,
-                                signal_handle,
-                                FstSignalValue::String(std::str::from_utf8(&value)?),
-                            );
-                        } else {
-                            let value = read_f64(&mut byte_reader, self.meta.float_endian)?;
-                            (self.callback)(start_time, signal_handle, FstSignalValue::Real(value));
-                        }
-                    }
-                }
-            } else {
-                // skip
-                self.input.seek(SeekFrom::Current(signal_length as i64))?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn skip_frame(&mut self, section_start: u64) -> Result<()> {
         // we skip the section header (section_length, start_time, end_time, ???)
         self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
@@ -632,7 +540,8 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                     // read all signal values
                     self.input
                         .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
-                    let mut bytes = read_packed_signal_values(&mut self.input, *length, packtpe)?;
+                    let mut bytes =
+                        read_packed_signal_value_bytes(&mut self.input, *length, packtpe)?;
 
                     // read first time delta
                     let len = self.meta.signals[signal_idx].len();
@@ -678,10 +587,11 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
                         let value_buf = [value];
+                        let value_str = std::str::from_utf8(&value_buf)?;
                         (self.callback)(
                             *time,
                             signal_handle,
-                            FstSignalValue::String(std::str::from_utf8(&value_buf)?),
+                            FstSignalValue::String(value_str.to_string()),
                         );
                         0 // no additional bytes consumed
                     }
@@ -691,7 +601,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                         (self.callback)(
                             *time,
                             signal_handle,
-                            FstSignalValue::String(std::str::from_utf8(&value)?),
+                            FstSignalValue::String(String::from_utf8(value)?),
                         );
                         len + skiplen2
                     }
@@ -712,7 +622,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                             (self.callback)(
                                 *time,
                                 signal_handle,
-                                FstSignalValue::String(std::str::from_utf8(&value)?),
+                                FstSignalValue::String(String::from_utf8(value)?),
                             );
                             len
                         } else {
@@ -774,12 +684,23 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
             // let mem_required_for_traversal = read_u64(&mut self.input)? + 66;
 
             let (time_section_length, time_table) =
-                self.read_time_block(section.file_offset, section_length)?;
+                read_time_block(&mut self.input, section.file_offset, section_length)?;
 
             // only read frame if this is the first section and there is no other data for
             // the start time
             if is_first_section && time_table[0] > start_time {
-                self.read_frame(section.file_offset, section_length, start_time)?;
+                let reader = read_frame(
+                    &mut self.input,
+                    section.file_offset,
+                    section_length,
+                    &self.meta.signals,
+                    &self.filter.signals,
+                    self.meta.float_endian,
+                )?;
+                for entry in reader {
+                    let (handle, value) = entry?;
+                    (self.callback)(start_time, handle, value);
+                }
             } else {
                 self.skip_frame(section.file_offset)?;
             }

@@ -474,11 +474,10 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
     Ok(signals)
 }
 
-const GEOMETRY_COMPRESSION_LEVEL: flate2::Compression = flate2::Compression::best();
-
 pub(crate) fn write_geometry(
     output: &mut (impl Write + Seek),
     signals: &Vec<SignalInfo>,
+    compression: flate2::Compression,
 ) -> WriteResult<()> {
     // remember start to fix the section length afterwards
     let start = output.stream_position()?;
@@ -495,8 +494,7 @@ pub(crate) fn write_geometry(
     write_u64(output, max_handle)?;
 
     // compress signals
-    let compressed_len =
-        write_compressed_bytes(output, &bytes, GEOMETRY_COMPRESSION_LEVEL, true)? as u64;
+    let compressed_len = write_compressed_bytes(output, &bytes, compression, true)? as u64;
 
     // fix section length
     let section_length = compressed_len + 3 * 8;
@@ -1044,6 +1042,42 @@ pub(crate) fn read_time_block(
     Ok((time_section_length, time_table))
 }
 
+pub(crate) fn write_time_block(
+    output: &mut (impl Write + Seek),
+    compression: Option<flate2::Compression>,
+    table: &TimeTable,
+) -> WriteResult<()> {
+    // write data
+    let (uncompressed_len, compressed_len, out2) = match compression {
+        Some(comp) => {
+            let start = output.stream_position()?;
+            let mut e = flate2::write::ZlibEncoder::new(output, comp);
+            let uncompressed_len = write_time_table_data(&mut e, table)? as u64;
+            let out2 = e.finish()?;
+            let end = out2.stream_position()?;
+            let compressed_len = end - start;
+            (uncompressed_len, compressed_len, out2)
+        }
+        None => {
+            let len = write_time_table_data(output, table)? as u64;
+            (len, len, output)
+        }
+    };
+    write_u64(out2, uncompressed_len)?;
+    write_u64(out2, compressed_len)?;
+    write_u64(out2, table.len() as u64)?;
+
+    Ok(())
+}
+
+fn write_time_table_data(output: &mut impl Write, table: &TimeTable) -> WriteResult<usize> {
+    let mut total_len = 0;
+    for time in table {
+        total_len += write_variant_u64(output, *time)?;
+    }
+    Ok(total_len)
+}
+
 pub(crate) struct FrameReader<'a> {
     signals: &'a [SignalInfo],
     signal_filter: &'a BitMask,
@@ -1264,7 +1298,8 @@ mod tests {
         fn test_read_write_geometry(signals: Vec<SignalInfo>) {
             let max_len = signals.len() * 4 + 3 * 8;
             let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
-            write_geometry(&mut buf, &signals).unwrap();
+            let comp = flate2::Compression::best();
+            write_geometry(&mut buf, &signals, comp).unwrap();
             buf.seek(SeekFrom::Start(0)).unwrap();
             let actual = read_geometry(&mut buf).unwrap();
             assert_eq!(actual.len(), signals.len());

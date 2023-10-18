@@ -6,6 +6,7 @@
 use crate::types::*;
 use crate::FstSignalValue;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
+use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 #[derive(Debug)]
@@ -1011,13 +1012,11 @@ pub(crate) fn read_packed_signal_value_bytes(
     }
 }
 
-type TimeTable = Vec<u64>;
-
-pub(crate) fn read_time_block(
+pub(crate) fn read_time_chain(
     input: &mut (impl Read + Seek),
     section_start: u64,
     section_length: u64,
-) -> ReadResult<(u64, TimeTable)> {
+) -> ReadResult<(u64, Vec<u64>)> {
     // the time block meta data is in the last 24 bytes at the end of the section
     input.seek(SeekFrom::Start(section_start + section_length - 3 * 8))?;
     let uncompressed_length = read_u64(input)?;
@@ -1042,7 +1041,7 @@ pub(crate) fn read_time_block(
     Ok((time_section_length, time_table))
 }
 
-pub(crate) fn write_time_block(
+pub(crate) fn write_time_chain(
     output: &mut (impl Write + Seek),
     compression: Option<flate2::Compression>,
     table: &[u64],
@@ -1052,7 +1051,7 @@ pub(crate) fn write_time_block(
         Some(comp) => {
             let start = output.stream_position()?;
             let mut e = flate2::write::ZlibEncoder::new(output, comp);
-            let uncompressed_len = write_time_table_data(&mut e, table)? as u64;
+            let uncompressed_len = write_time_chain_data(&mut e, table)? as u64;
             let out2 = e.finish()?;
             let end = out2.stream_position()?;
             let compressed_len = end - start;
@@ -1060,14 +1059,14 @@ pub(crate) fn write_time_block(
             // important: if the compression does not work, we need to save the data uncompressed
             if compressed_len >= uncompressed_len {
                 out2.seek(SeekFrom::Start(start))?; // go back to start
-                let len = write_time_table_data(out2, table)? as u64;
+                let len = write_time_chain_data(out2, table)? as u64;
                 (len, len, out2)
             } else {
                 (uncompressed_len, compressed_len, out2)
             }
         }
         None => {
-            let len = write_time_table_data(output, table)? as u64;
+            let len = write_time_chain_data(output, table)? as u64;
             (len, len, output)
         }
     };
@@ -1078,7 +1077,8 @@ pub(crate) fn write_time_block(
     Ok(())
 }
 
-fn write_time_table_data(output: &mut impl Write, table: &[u64]) -> WriteResult<usize> {
+#[inline]
+fn write_time_chain_data(output: &mut impl Write, table: &[u64]) -> WriteResult<usize> {
     let mut total_len = 0;
     let mut prev_time = 0u64;
     for time in table {
@@ -1089,6 +1089,7 @@ fn write_time_table_data(output: &mut impl Write, table: &[u64]) -> WriteResult<
     Ok(total_len)
 }
 
+#[inline]
 pub(crate) fn read_frame<'a>(
     input: &mut (impl Read + Seek),
     section_start: u64,
@@ -1113,6 +1114,17 @@ pub(crate) fn read_frame<'a>(
         signal_count: max_handle as usize,
     };
     Ok(reader)
+}
+
+#[inline]
+pub(crate) fn skip_frame(input: &mut (impl Read + Seek), section_start: u64) -> ReadResult<()> {
+    // we skip the section header (section_length, start_time, end_time, ???)
+    input.seek(SeekFrom::Start(section_start + 4 * 8))?;
+    let (_uncompressed_length, _) = read_variant_u64(input)?;
+    let (compressed_length, _) = read_variant_u64(input)?;
+    let (_max_handle, _) = read_variant_u64(input)?;
+    input.seek(SeekFrom::Current(compressed_length as i64))?;
+    Ok(())
 }
 
 pub(crate) struct FrameReader<'a> {
@@ -1175,6 +1187,135 @@ impl<'a> Iterator for FrameReader<'a> {
         }
         None // done
     }
+}
+
+#[inline]
+fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
+    for _ in 0..zeros {
+        chain_table.push(0);
+    }
+}
+
+fn read_value_change_alias2(
+    mut chain_bytes: &[u8],
+    max_handle: u64,
+) -> ReadResult<(Vec<i64>, Vec<u32>, usize)> {
+    let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+    let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
+    let mut value = 0i64;
+    let mut prev_alias = 0u32;
+    let mut prev_idx = 0usize;
+    while !chain_bytes.is_empty() {
+        let idx = chain_table.len();
+        let kind = chain_bytes[0];
+        if (kind & 1) == 1 {
+            let shval = read_variant_i64(&mut chain_bytes)? >> 1;
+            match shval.cmp(&0) {
+                Ordering::Greater => {
+                    value += shval;
+                    if !chain_table.is_empty() {
+                        let len = (value - chain_table[prev_idx]) as u32;
+                        chain_table_lengths[prev_idx] = len;
+                    }
+                    prev_idx = idx;
+                    chain_table.push(value);
+                }
+                Ordering::Less => {
+                    chain_table.push(0);
+                    prev_alias = shval as u32;
+                    chain_table_lengths[idx] = prev_alias;
+                }
+                Ordering::Equal => {
+                    chain_table.push(0);
+                    chain_table_lengths[idx] = prev_alias;
+                }
+            }
+        } else {
+            let (value, _) = read_variant_u32(&mut chain_bytes)?;
+            let zeros = value >> 1;
+            push_zeros(&mut chain_table, zeros);
+        }
+    }
+
+    Ok((chain_table, chain_table_lengths, prev_idx))
+}
+
+fn read_value_change_alias(
+    mut chain_bytes: &[u8],
+    max_handle: u64,
+) -> ReadResult<(Vec<i64>, Vec<u32>, usize)> {
+    let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+    let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
+    let mut prev_idx = 0usize;
+    let mut value = 0i64;
+    while !chain_bytes.is_empty() {
+        let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
+        let idx = chain_table.len();
+        if raw_val == 0 {
+            chain_table.push(0); // alias
+            let (len, _) = read_variant_u32(&mut chain_bytes)?;
+            chain_table_lengths[idx] = (-(len as i64)) as u32;
+        } else if (raw_val & 1) == 1 {
+            value += (raw_val as i64) >> 1;
+            if idx > 0 {
+                let len = (value - chain_table[prev_idx]) as u32;
+                chain_table_lengths[prev_idx] = len;
+            }
+            chain_table.push(value);
+            prev_idx = idx; // only take non-alias signals into account
+        } else {
+            let zeros = raw_val >> 1;
+            push_zeros(&mut chain_table, zeros);
+        }
+    }
+
+    Ok((chain_table, chain_table_lengths, prev_idx))
+}
+
+fn fixup_chain_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
+    assert_eq!(chain_table.len(), chain_lengths.len());
+    for ii in 0..chain_table.len() {
+        let v32 = chain_lengths[ii] as i32;
+        if (v32 < 0) && (chain_table[ii] == 0) {
+            // two's complement
+            let v32_index = (-v32 - 1) as usize;
+            if v32_index < ii {
+                // "sanity check"
+                chain_table[ii] = chain_table[v32_index];
+                chain_lengths[ii] = chain_lengths[v32_index];
+            }
+        }
+    }
+}
+
+pub(crate) fn read_chain_table(
+    input: &mut (impl Read + Seek),
+    chain_len_offset: u64,
+    section_kind: DataSectionKind,
+    max_handle: u64,
+    start: u64,
+) -> ReadResult<(Vec<i64>, Vec<u32>)> {
+    input.seek(SeekFrom::Start(chain_len_offset))?;
+    let chain_compressed_length = read_u64(input)?;
+
+    // the chain starts _chain_length_ bytes before the chain length
+    let chain_start = chain_len_offset - chain_compressed_length;
+    input.seek(SeekFrom::Start(chain_start))?;
+    let chain_bytes = read_bytes(input, chain_compressed_length as usize)?;
+
+    let (mut chain_table, mut chain_table_lengths, prev_idx) =
+        if section_kind == DataSectionKind::DynamicAlias2 {
+            read_value_change_alias2(&chain_bytes, max_handle)?
+        } else {
+            read_value_change_alias(&chain_bytes, max_handle)?
+        };
+    let last_table_entry = (chain_start as i64) - (start as i64); // indx_pos - vc_start
+    chain_table.push(last_table_entry);
+    chain_table_lengths[prev_idx] = (last_table_entry - chain_table[prev_idx]) as u32;
+
+    fixup_chain_table(&mut chain_table, &mut chain_table_lengths);
+
+    Ok((chain_table, chain_table_lengths))
 }
 
 #[cfg(test)]
@@ -1436,12 +1577,12 @@ mod tests {
         } else {
             None
         };
-        write_time_block(&mut buf, comp, &table).unwrap();
+        write_time_chain(&mut buf, comp, &table).unwrap();
         let section_start = 0u64;
         let section_length = buf.stream_position().unwrap();
         buf.seek(SeekFrom::Start(0)).unwrap();
         let (actual_len, actual_table) =
-            read_time_block(&mut buf, section_start, section_length).unwrap();
+            read_time_chain(&mut buf, section_start, section_length).unwrap();
         assert_eq!(actual_len, section_length);
         assert_eq!(actual_table, table);
     }

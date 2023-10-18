@@ -4,7 +4,6 @@
 
 use crate::io::*;
 use crate::types::*;
-use std::cmp::Ordering;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
@@ -362,154 +361,14 @@ struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalVa
     callback: &'a mut F,
 }
 
-#[inline]
-fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
-    for _ in 0..zeros {
-        chain_table.push(0);
-    }
-}
-
 impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'a, R, F> {
-    fn skip_frame(&mut self, section_start: u64) -> Result<()> {
-        // we skip the section header (section_length, start_time, end_time, ???)
-        self.input.seek(SeekFrom::Start(section_start + 4 * 8))?;
-        let (_uncompressed_length, _) = read_variant_u64(&mut self.input)?;
-        let (compressed_length, _) = read_variant_u64(&mut self.input)?;
-        let (_max_handle, _) = read_variant_u64(&mut self.input)?;
-        self.input
-            .seek(SeekFrom::Current(compressed_length as i64))?;
-        Ok(())
-    }
-
-    fn read_value_change_alias2(
-        mut chain_bytes: &[u8],
-        max_handle: u64,
-    ) -> Result<(Vec<i64>, Vec<u32>, usize)> {
-        let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
-        let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
-        let mut value = 0i64;
-        let mut prev_alias = 0u32;
-        let mut prev_idx = 0usize;
-        while !chain_bytes.is_empty() {
-            let idx = chain_table.len();
-            let kind = chain_bytes[0];
-            if (kind & 1) == 1 {
-                let shval = read_variant_i64(&mut chain_bytes)? >> 1;
-                match shval.cmp(&0) {
-                    Ordering::Greater => {
-                        value += shval;
-                        if !chain_table.is_empty() {
-                            let len = (value - chain_table[prev_idx]) as u32;
-                            chain_table_lengths[prev_idx] = len;
-                        }
-                        prev_idx = idx;
-                        chain_table.push(value);
-                    }
-                    Ordering::Less => {
-                        chain_table.push(0);
-                        prev_alias = shval as u32;
-                        chain_table_lengths[idx] = prev_alias;
-                    }
-                    Ordering::Equal => {
-                        chain_table.push(0);
-                        chain_table_lengths[idx] = prev_alias;
-                    }
-                }
-            } else {
-                let (value, _) = read_variant_u32(&mut chain_bytes)?;
-                let zeros = value >> 1;
-                push_zeros(&mut chain_table, zeros);
-            }
-        }
-
-        Ok((chain_table, chain_table_lengths, prev_idx))
-    }
-
-    fn read_value_change_alias(
-        mut chain_bytes: &[u8],
-        max_handle: u64,
-    ) -> Result<(Vec<i64>, Vec<u32>, usize)> {
-        let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
-        let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
-        let mut prev_idx = 0usize;
-        let mut value = 0i64;
-        while !chain_bytes.is_empty() {
-            let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
-            let idx = chain_table.len();
-            if raw_val == 0 {
-                chain_table.push(0); // alias
-                let (len, _) = read_variant_u32(&mut chain_bytes)?;
-                chain_table_lengths[idx] = (-(len as i64)) as u32;
-            } else if (raw_val & 1) == 1 {
-                value += (raw_val as i64) >> 1;
-                if idx > 0 {
-                    let len = (value - chain_table[prev_idx]) as u32;
-                    chain_table_lengths[prev_idx] = len;
-                }
-                chain_table.push(value);
-                prev_idx = idx; // only take non-alias signals into account
-            } else {
-                let zeros = raw_val >> 1;
-                push_zeros(&mut chain_table, zeros);
-            }
-        }
-
-        Ok((chain_table, chain_table_lengths, prev_idx))
-    }
-
-    fn fixup_chain_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
-        assert_eq!(chain_table.len(), chain_lengths.len());
-        for ii in 0..chain_table.len() {
-            let v32 = chain_lengths[ii] as i32;
-            if (v32 < 0) && (chain_table[ii] == 0) {
-                // two's complement
-                let v32_index = (-v32 - 1) as usize;
-                if v32_index < ii {
-                    // "sanity check"
-                    chain_table[ii] = chain_table[v32_index];
-                    chain_lengths[ii] = chain_lengths[v32_index];
-                }
-            }
-        }
-    }
-
-    fn read_chain_table(
-        &mut self,
-        chain_len_offset: u64,
-        section_kind: DataSectionKind,
-        max_handle: u64,
-        start: u64,
-    ) -> Result<(Vec<i64>, Vec<u32>)> {
-        self.input.seek(SeekFrom::Start(chain_len_offset))?;
-        let chain_compressed_length = read_u64(&mut self.input)?;
-
-        // the chain starts _chain_length_ bytes before the chain length
-        let chain_start = chain_len_offset - chain_compressed_length;
-        self.input.seek(SeekFrom::Start(chain_start))?;
-        let chain_bytes = read_bytes(&mut self.input, chain_compressed_length as usize)?;
-
-        let (mut chain_table, mut chain_table_lengths, prev_idx) =
-            if section_kind == DataSectionKind::DynamicAlias2 {
-                Self::read_value_change_alias2(&chain_bytes, max_handle)?
-            } else {
-                Self::read_value_change_alias(&chain_bytes, max_handle)?
-            };
-        let last_table_entry = (chain_start as i64) - (start as i64); // indx_pos - vc_start
-        chain_table.push(last_table_entry);
-        chain_table_lengths[prev_idx] = (last_table_entry - chain_table[prev_idx]) as u32;
-
-        Self::fixup_chain_table(&mut chain_table, &mut chain_table_lengths);
-
-        Ok((chain_table, chain_table_lengths))
-    }
-
     fn read_value_changes(
         &mut self,
         section_kind: DataSectionKind,
         section_start: u64,
         section_length: u64,
         time_section_length: u64,
-        time_table: &[u64],
+        time_chain: &[u64],
     ) -> Result<()> {
         let (max_handle, _) = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
@@ -517,15 +376,20 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
-        let (chain_table, chain_table_lengths) =
-            self.read_chain_table(chain_len_offset, section_kind, max_handle, vc_start)?;
+        let (chain_table, chain_table_lengths) = read_chain_table(
+            &mut self.input,
+            chain_len_offset,
+            section_kind,
+            max_handle,
+            vc_start,
+        )?;
 
         // read data and create a bunch of pointers
         let mut mu: Vec<u8> = Vec::new();
         let mut head_pointer: Vec<u32> = Vec::with_capacity(max_handle as usize);
         let mut length_remaining: Vec<u32> = Vec::with_capacity(max_handle as usize);
         let mut scatter_pointer = vec![0u32; max_handle as usize];
-        let mut tc_head = vec![0u32; std::cmp::max(1, time_table.len())];
+        let mut tc_head = vec![0u32; std::cmp::max(1, time_chain.len())];
 
         for (signal_idx, (entry, length)) in chain_table
             .iter()
@@ -569,7 +433,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
             }
         }
 
-        for (time_id, time) in time_table.iter().enumerate() {
+        for (time_id, time) in time_chain.iter().enumerate() {
             // while we cannot ignore signal changes before the start of the window
             // (since the signal might retain values for multiple cycles),
             // signal changes after our window are completely useless
@@ -683,12 +547,12 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
             // 66 is for the potential fastlz overhead
             // let mem_required_for_traversal = read_u64(&mut self.input)? + 66;
 
-            let (time_section_length, time_table) =
-                read_time_block(&mut self.input, section.file_offset, section_length)?;
+            let (time_section_length, time_chain) =
+                read_time_chain(&mut self.input, section.file_offset, section_length)?;
 
             // only read frame if this is the first section and there is no other data for
             // the start time
-            if is_first_section && time_table[0] > start_time {
+            if is_first_section && time_chain[0] > start_time {
                 let reader = read_frame(
                     &mut self.input,
                     section.file_offset,
@@ -702,7 +566,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                     (self.callback)(start_time, handle, value);
                 }
             } else {
-                self.skip_frame(section.file_offset)?;
+                skip_frame(&mut self.input, section.file_offset)?;
             }
 
             self.read_value_changes(
@@ -710,7 +574,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                 section.file_offset,
                 section_length,
                 time_section_length,
-                &time_table,
+                &time_chain,
             )?;
         }
 

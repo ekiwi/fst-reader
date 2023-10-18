@@ -1055,7 +1055,14 @@ mod tests {
     /// makes sure that there are no zero bytes inside the string and that the max length is obeyed
     fn is_valid_c_str(value: &str, max_len: usize) -> bool {
         let string_bytes: &[u8] = value.as_bytes();
-        string_bytes.len() < max_len && !string_bytes.contains(&0u8)
+        let len_constraint = string_bytes.len() < max_len;
+        let non_zero_constraint = !string_bytes.contains(&0u8);
+        len_constraint && non_zero_constraint
+    }
+
+    fn is_valid_alphanumeric_c_str(value: &str, max_len: usize) -> bool {
+        let alphanumeric_constraint = value.chars().all(|c| c.is_alphanumeric());
+        is_valid_c_str(value, max_len) && alphanumeric_constraint
     }
 
     proptest! {
@@ -1157,10 +1164,11 @@ mod tests {
             FstHierarchyEntry::SourceStem { .. } => true,
             FstHierarchyEntry::Comment { string } => is_valid_c_str(string, max_len),
             FstHierarchyEntry::EnumTable { name, mapping, .. } => {
-                is_valid_c_str(name, max_len)
-                    && mapping
-                        .iter()
-                        .all(|(k, v)| is_valid_c_str(k, max_len) && is_valid_c_str(v, max_len))
+                is_valid_alphanumeric_c_str(name, max_len)
+                    && mapping.iter().all(|(k, v)| {
+                        is_valid_alphanumeric_c_str(k, max_len)
+                            && is_valid_alphanumeric_c_str(v, max_len)
+                    })
             }
             FstHierarchyEntry::EnumTableRef { .. } => true,
             FstHierarchyEntry::AttributeEnd => true,

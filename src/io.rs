@@ -1190,7 +1190,7 @@ impl<'a> Iterator for FrameReader<'a> {
 }
 
 #[inline]
-fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
+fn push_zeros(chain_table: &mut Vec<u64>, zeros: u32) {
     for _ in 0..zeros {
         chain_table.push(0);
     }
@@ -1199,10 +1199,10 @@ fn push_zeros(chain_table: &mut Vec<i64>, zeros: u32) {
 fn read_value_change_alias2(
     mut chain_bytes: &[u8],
     max_handle: u64,
-) -> ReadResult<(Vec<i64>, Vec<u32>, usize)> {
-    let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+) -> ReadResult<(Vec<u64>, Vec<u32>, usize)> {
+    let mut chain_table: Vec<u64> = Vec::with_capacity(max_handle as usize);
     let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
-    let mut value = 0i64;
+    let mut value = 0u64;
     let mut prev_alias = 0u32;
     let mut prev_idx = 0usize;
     while !chain_bytes.is_empty() {
@@ -1212,7 +1212,7 @@ fn read_value_change_alias2(
             let shval = read_variant_i64(&mut chain_bytes)? >> 1;
             match shval.cmp(&0) {
                 Ordering::Greater => {
-                    value += shval;
+                    value = (value as i64 + shval) as u64;
                     if !chain_table.is_empty() {
                         let len = (value - chain_table[prev_idx]) as u32;
                         chain_table_lengths[prev_idx] = len;
@@ -1243,11 +1243,11 @@ fn read_value_change_alias2(
 fn read_value_change_alias(
     mut chain_bytes: &[u8],
     max_handle: u64,
-) -> ReadResult<(Vec<i64>, Vec<u32>, usize)> {
-    let mut chain_table: Vec<i64> = Vec::with_capacity(max_handle as usize);
+) -> ReadResult<(Vec<u64>, Vec<u32>, usize)> {
+    let mut chain_table: Vec<u64> = Vec::with_capacity(max_handle as usize);
     let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
     let mut prev_idx = 0usize;
-    let mut value = 0i64;
+    let mut value = 0u64;
     while !chain_bytes.is_empty() {
         let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
         let idx = chain_table.len();
@@ -1256,7 +1256,7 @@ fn read_value_change_alias(
             let (len, _) = read_variant_u32(&mut chain_bytes)?;
             chain_table_lengths[idx] = (-(len as i64)) as u32;
         } else if (raw_val & 1) == 1 {
-            value += (raw_val as i64) >> 1;
+            value += (raw_val as u64) >> 1;
             if idx > 0 {
                 let len = (value - chain_table[prev_idx]) as u32;
                 chain_table_lengths[prev_idx] = len;
@@ -1272,7 +1272,7 @@ fn read_value_change_alias(
     Ok((chain_table, chain_table_lengths, prev_idx))
 }
 
-fn fixup_chain_table(chain_table: &mut Vec<i64>, chain_lengths: &mut Vec<u32>) {
+fn fixup_chain_table(chain_table: &mut Vec<u64>, chain_lengths: &mut Vec<u32>) {
     assert_eq!(chain_table.len(), chain_lengths.len());
     for ii in 0..chain_table.len() {
         let v32 = chain_lengths[ii] as i32;
@@ -1294,7 +1294,7 @@ pub(crate) fn read_chain_table(
     section_kind: DataSectionKind,
     max_handle: u64,
     start: u64,
-) -> ReadResult<(Vec<i64>, Vec<u32>)> {
+) -> ReadResult<(Vec<u64>, Vec<u32>)> {
     input.seek(SeekFrom::Start(chain_len_offset))?;
     let chain_compressed_length = read_u64(input)?;
 
@@ -1309,7 +1309,7 @@ pub(crate) fn read_chain_table(
         } else {
             read_value_change_alias(&chain_bytes, max_handle)?
         };
-    let last_table_entry = (chain_start as i64) - (start as i64); // indx_pos - vc_start
+    let last_table_entry = chain_start - start; // indx_pos - vc_start
     chain_table.push(last_table_entry);
     chain_table_lengths[prev_idx] = (last_table_entry - chain_table[prev_idx]) as u32;
 

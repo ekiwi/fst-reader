@@ -402,8 +402,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                 // is the signal supposed to be included?
                 if self.filter.signals[signal_idx] {
                     // read all signal values
-                    self.input
-                        .seek(SeekFrom::Start((vc_start as i64 + entry) as u64))?;
+                    self.input.seek(SeekFrom::Start(vc_start + entry))?;
                     let mut bytes =
                         read_packed_signal_value_bytes(&mut self.input, *length, packtpe)?;
 

@@ -54,3 +54,12 @@ fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
 fn load_sigrok() {
     run_load_test("fsts/sigrok/libsigrok.vcd.fst", &FstFilter::all());
 }
+
+#[test]
+fn load_time_table_treadle_gcd() {
+    let filename = "fsts/treadle/GCD.vcd.fst";
+    let f = std::fs::File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
+    let reader = FstReader::open_and_read_time_table(std::io::BufReader::new(f)).unwrap();
+    let expected = [0u64, 1, 2, 3, 4];
+    assert_eq!(reader.get_time_table().unwrap(), expected);
+}

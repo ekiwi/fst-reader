@@ -75,12 +75,20 @@ pub struct FstHeader {
 
 impl<R: BufRead + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
-    pub fn open(mut input: R) -> Result<Self> {
+    pub fn open(input: R) -> Result<Self> {
+        Self::open_internal(input, false)
+    }
+
+    pub fn open_and_read_time_table(input: R) -> Result<Self> {
+        Self::open_internal(input, true)
+    }
+
+    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
             None => {
                 let mut header_reader = HeaderReader::new(input);
-                header_reader.read()?;
+                header_reader.read(read_time_table)?;
                 let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
                     input: InputVariant::Original(input),
@@ -89,7 +97,7 @@ impl<R: BufRead + Seek> FstReader<R> {
             }
             Some(uc) => {
                 let mut header_reader = HeaderReader::new(uc);
-                header_reader.read()?;
+                header_reader.read(read_time_table)?;
                 let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
                     input: InputVariant::Uncompressed(uc2),
@@ -107,6 +115,13 @@ impl<R: BufRead + Seek> FstReader<R> {
             max_handle: self.meta.header.max_var_id_code,
             version: self.meta.header.version.clone(),
             date: self.meta.header.date.clone(),
+        }
+    }
+
+    pub fn get_time_table(&self) -> Option<&[u64]> {
+        match &self.meta.time_table {
+            Some(table) => Some(table),
+            None => None,
         }
     }
 
@@ -235,6 +250,7 @@ struct MetaData {
     float_endian: FloatingPointEndian,
     hierarchy_compression: HierarchyCompression,
     hierarchy_offset: u64,
+    time_table: Option<Vec<u64>>,
 }
 
 pub type Result<T> = std::result::Result<T, ReaderError>;
@@ -247,6 +263,7 @@ struct HeaderReader<R: Read + Seek> {
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
     hierarchy: Option<(HierarchyCompression, u64)>,
+    time_table: Option<Vec<u64>>,
 }
 
 impl<R: Read + Seek> HeaderReader<R> {
@@ -259,6 +276,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             data_sections: Vec::default(),
             float_endian: FloatingPointEndian::Little,
             hierarchy: None,
+            time_table: None,
         }
     }
 
@@ -268,6 +286,19 @@ impl<R: Read + Seek> HeaderReader<R> {
         let section_length = read_u64(&mut self.input)?;
         let start_time = read_u64(&mut self.input)?;
         let end_time = read_u64(&mut self.input)?;
+        // optional: read the time table
+        if let Some(table) = &mut self.time_table {
+            let (_, mut time_chain) =
+                read_time_chain(&mut self.input, file_offset, section_length)?;
+            // in the first section, we might need to include the start time
+            let is_first_section = table.is_empty();
+            if is_first_section && time_chain[0] > start_time {
+                table.push(start_time);
+            }
+            table.append(&mut time_chain);
+            self.input.seek(SeekFrom::Start(file_offset + 3 * 8))?;
+        }
+        // go to the end of the section
         self.skip(section_length, 3 * 8)?;
         let kind = DataSectionKind::from_block_type(tpe).unwrap();
         let info = DataSectionInfo {
@@ -299,7 +330,10 @@ impl<R: Read + Seek> HeaderReader<R> {
         Ok(())
     }
 
-    fn read(&mut self) -> Result<()> {
+    fn read(&mut self, read_time_table: bool) -> Result<()> {
+        if read_time_table {
+            self.time_table = Some(Vec::new());
+        }
         loop {
             let block_tpe = match read_block_tpe(&mut self.input) {
                 Err(ReaderError {
@@ -349,6 +383,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             float_endian: self.float_endian,
             hierarchy_compression: self.hierarchy.unwrap().0,
             hierarchy_offset: self.hierarchy.unwrap().1,
+            time_table: self.time_table,
         };
         Ok((self.input, meta))
     }

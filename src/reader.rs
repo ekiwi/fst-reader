@@ -71,6 +71,8 @@ pub struct FstHeader {
     pub version: String,
     /// human readable times stamp
     pub date: String,
+    /// the exponent of the timescale; timescale will be 10^(exponent) seconds
+    pub timescale_exponent: i8,
 }
 
 impl<R: BufRead + Seek> FstReader<R> {
@@ -115,6 +117,7 @@ impl<R: BufRead + Seek> FstReader<R> {
             max_handle: self.meta.header.max_var_id_code,
             version: self.meta.header.version.clone(),
             date: self.meta.header.date.clone(),
+            timescale_exponent: self.meta.header.timescale_exponent,
         }
     }
 

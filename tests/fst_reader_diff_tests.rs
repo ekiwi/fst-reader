@@ -21,6 +21,7 @@ fn fst_sys_load_header(handle: *mut c_void) -> FstHeader {
             max_handle: fst_sys::fstReaderGetMaxHandle(handle) as u64,
             version: CStr::from_ptr(version).to_str().unwrap().to_string(),
             date: CStr::from_ptr(date).to_str().unwrap().to_string(),
+            timescale_exponent: fst_sys::fstReaderGetTimescale(handle),
         }
     }
 }

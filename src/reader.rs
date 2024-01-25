@@ -173,8 +173,8 @@ impl<R: BufRead + Seek> FstReader<R> {
     }
 }
 
-pub enum FstSignalValue {
-    String(String),
+pub enum FstSignalValue<'a> {
+    String(&'a [u8]),
     Real(f64),
 }
 
@@ -248,6 +248,7 @@ fn uncompress_gzip_wrapper(
 struct MetaData {
     header: Header,
     signals: Vec<SignalInfo>,
+    #[allow(dead_code)]
     blackouts: Vec<BlackoutData>,
     data_sections: Vec<DataSectionInfo>,
     float_endian: FloatingPointEndian,
@@ -488,22 +489,13 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
                         let value_buf = [value];
-                        let value_str = std::str::from_utf8(&value_buf)?;
-                        (self.callback)(
-                            *time,
-                            signal_handle,
-                            FstSignalValue::String(value_str.to_string()),
-                        );
+                        (self.callback)(*time, signal_handle, FstSignalValue::String(&value_buf));
                         0 // no additional bytes consumed
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
                         let value = read_bytes(&mut mu_slice, len as usize)?;
-                        (self.callback)(
-                            *time,
-                            signal_handle,
-                            FstSignalValue::String(String::from_utf8(value)?),
-                        );
+                        (self.callback)(*time, signal_handle, FstSignalValue::String(&value));
                         len + skiplen2
                     }
                     len => {
@@ -520,11 +512,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                             } else {
                                 (read_bytes(&mut mu_slice, signal_len)?, len)
                             };
-                            (self.callback)(
-                                *time,
-                                signal_handle,
-                                FstSignalValue::String(String::from_utf8(value)?),
-                            );
+                            (self.callback)(*time, signal_handle, FstSignalValue::String(&value));
                             len
                         } else {
                             assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
@@ -590,18 +578,16 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
             // only read frame if this is the first section and there is no other data for
             // the start time
             if is_first_section && time_chain[0] > start_time {
-                let reader = read_frame(
+                read_frame(
                     &mut self.input,
                     section.file_offset,
                     section_length,
                     &self.meta.signals,
                     &self.filter.signals,
                     self.meta.float_endian,
+                    start_time,
+                    self.callback,
                 )?;
-                for entry in reader {
-                    let (handle, value) = entry?;
-                    (self.callback)(start_time, handle, value);
-                }
             } else {
                 skip_frame(&mut self.input, section.file_offset)?;
             }

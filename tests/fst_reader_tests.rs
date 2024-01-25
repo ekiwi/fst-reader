@@ -11,7 +11,7 @@ use std::io::{BufRead, Seek};
 mod utils;
 use utils::hierarchy_to_str;
 
-fn run_load_test(filename: &str, filter: &FstFilter) {
+fn run_load_test(filename: &str, _filter: &FstFilter) {
     let f = std::fs::File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
     let mut reader = FstReader::open(std::io::BufReader::new(f)).unwrap();
 

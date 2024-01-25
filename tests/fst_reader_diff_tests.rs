@@ -159,9 +159,8 @@ fn diff_hierarchy<R: std::io::BufRead + std::io::Seek>(
 }
 
 fn fst_sys_load_signals(handle: *mut c_void, is_real: &[bool]) -> VecDeque<(u64, u32, String)> {
-    let mut out = VecDeque::new();
     let mut data = CallbackData {
-        out,
+        out: VecDeque::new(),
         is_real: Vec::from(is_real),
     };
     unsafe {
@@ -236,7 +235,7 @@ fn diff_signals<R: std::io::BufRead + std::io::Seek>(
     let check = |time: u64, handle: FstSignalHandle, value: FstSignalValue| {
         let (exp_time, exp_handle, exp_value) = exp_signals.pop_front().unwrap();
         let actual_as_string = match value {
-            FstSignalValue::String(str) => str.to_string(),
+            FstSignalValue::String(value) => String::from_utf8_lossy(value).to_string(),
             FstSignalValue::Real(value) => format!("{value}"),
         };
         let actual = (time, handle.get_index() + 1, actual_as_string);
@@ -248,7 +247,7 @@ fn diff_signals<R: std::io::BufRead + std::io::Seek>(
     our_reader.read_signals(&filter, check).unwrap();
 }
 
-fn run_diff_test(filename: &str, filter: &FstFilter) {
+fn run_diff_test(filename: &str, _filter: &FstFilter) {
     // open file with FST library from GTKWave
     let c_path = CString::new(filename).unwrap();
     let exp_handle = unsafe { fst_sys::fstReaderOpen(c_path.as_ptr()) };

@@ -437,6 +437,7 @@ pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<(Header, Floating
     Ok((header, float_endian))
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_header(output: &mut impl Write, header: &Header) -> WriteResult<()> {
     write_u64(output, HEADER_LENGTH)?;
     write_u64(output, header.start_time)?;
@@ -475,6 +476,7 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
     Ok(signals)
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_geometry(
     output: &mut (impl Write + Seek),
     signals: &Vec<SignalInfo>,
@@ -531,6 +533,7 @@ pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Bl
     Ok(blackouts)
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_blackout(
     output: &mut (impl Write + Seek),
     blackouts: &[BlackoutData],
@@ -599,6 +602,7 @@ pub(crate) fn read_hierarchy_bytes(
     Ok(bytes)
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_hierarchy_bytes(
     output: &mut (impl Write + Seek),
     compression: HierarchyCompression,
@@ -846,6 +850,7 @@ fn write_hierarchy_attribute(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_hierarchy_entry(
     output: &mut impl Write,
     handle_count: &mut u32,
@@ -963,15 +968,6 @@ pub(crate) fn write_hierarchy_entry(
 
 //////////////// Vale Change Data
 
-// for debugging
-fn print_python_bytes(bytes: &[u8]) {
-    print!("b\"");
-    for bb in bytes {
-        print!("\\x{:02x}", bb);
-    }
-    println!("\"");
-}
-
 pub(crate) fn read_packed_signal_value_bytes(
     input: &mut (impl Read + Seek),
     len: u32,
@@ -1041,6 +1037,7 @@ pub(crate) fn read_time_chain(
     Ok((time_section_length, time_table))
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_time_chain(
     output: &mut (impl Write + Seek),
     compression: Option<flate2::Compression>,
@@ -1090,30 +1087,48 @@ fn write_time_chain_data(output: &mut impl Write, table: &[u64]) -> WriteResult<
 }
 
 #[inline]
-pub(crate) fn read_frame<'a>(
+pub(crate) fn read_frame(
     input: &mut (impl Read + Seek),
     section_start: u64,
     section_length: u64,
-    signals: &'a [SignalInfo],
-    signal_filter: &'a BitMask,
+    signals: &[SignalInfo],
+    signal_filter: &BitMask,
     float_endian: FloatingPointEndian,
-) -> ReadResult<FrameReader<'a>> {
+    start_time: u64,
+    callback: &mut impl FnMut(u64, FstSignalHandle, FstSignalValue),
+) -> ReadResult<()> {
     // we skip the section header (section_length, start_time, end_time, ???)
     input.seek(SeekFrom::Start(section_start + 4 * 8))?;
     let (uncompressed_length, _) = read_variant_u64(input)?;
     let (compressed_length, _) = read_variant_u64(input)?;
     let (max_handle, _) = read_variant_u64(input)?;
     assert!(compressed_length <= section_length);
-    let bytes = read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
-    let reader = FrameReader {
-        signals,
-        signal_filter,
-        float_endian,
-        bytes: std::io::Cursor::new(bytes),
-        idx: 0,
-        signal_count: max_handle as usize,
-    };
-    Ok(reader)
+    let bytes_vec =
+        read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
+    let mut bytes = std::io::Cursor::new(bytes_vec);
+
+    for idx in 0..(max_handle as usize) {
+        let signal_length = signals[idx].len();
+        if signal_filter[idx] {
+            let handle = FstSignalHandle::from_index(idx);
+            match signal_length {
+                0 => {} // ignore since variable-length records have no initial value
+                len => {
+                    if !signals[idx].is_real() {
+                        let value = read_bytes(&mut bytes, len as usize)?;
+                        (callback)(start_time, handle, FstSignalValue::String(&value));
+                    } else {
+                        let value = read_f64(&mut bytes, float_endian)?;
+                        (callback)(start_time, handle, FstSignalValue::Real(value));
+                    }
+                }
+            }
+        } else {
+            // skip
+            bytes.seek(SeekFrom::Current(signal_length as i64))?;
+        }
+    }
+    Ok(())
 }
 
 #[inline]
@@ -1125,68 +1140,6 @@ pub(crate) fn skip_frame(input: &mut (impl Read + Seek), section_start: u64) -> 
     let (_max_handle, _) = read_variant_u64(input)?;
     input.seek(SeekFrom::Current(compressed_length as i64))?;
     Ok(())
-}
-
-pub(crate) struct FrameReader<'a> {
-    signals: &'a [SignalInfo],
-    signal_filter: &'a BitMask,
-    float_endian: FloatingPointEndian,
-    bytes: std::io::Cursor<Vec<u8>>,
-    idx: usize,
-    signal_count: usize, // aka max_handle
-}
-
-impl<'a> Iterator for FrameReader<'a> {
-    type Item = ReadResult<(FstSignalHandle, FstSignalValue)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let start_idx = self.idx;
-        for idx in start_idx..self.signal_count {
-            let signal_length = self.signals[idx].len();
-            if self.signal_filter[idx] {
-                let signal_handle = FstSignalHandle::from_index(idx);
-                match signal_length {
-                    0 => {} // ignore since variable-length records have no initial value
-                    len => {
-                        if !self.signals[idx].is_real() {
-                            let bytes = match read_bytes(&mut self.bytes, len as usize) {
-                                Ok(value) => value,
-                                Err(e) => return Some(Err(e)),
-                            };
-                            let value = match String::from_utf8(bytes) {
-                                Ok(value) => value,
-                                Err(e) => {
-                                    return Some(Err(ReaderError {
-                                        kind: ReaderErrorKind::StringParse2(e),
-                                    }))
-                                }
-                            };
-                            self.idx = idx + 1; // remember next idx
-                            return Some(Ok((signal_handle, FstSignalValue::String(value))));
-                        } else {
-                            let value = match read_f64(&mut self.bytes, self.float_endian) {
-                                Ok(value) => value,
-                                Err(e) => return Some(Err(e)),
-                            };
-                            self.idx = idx + 1; // remember next idx
-                            return Some(Ok((signal_handle, FstSignalValue::Real(value))));
-                        }
-                    }
-                }
-            } else {
-                // skip
-                match self.bytes.seek(SeekFrom::Current(signal_length as i64)) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        return Some(Err(ReaderError {
-                            kind: ReaderErrorKind::IO(e),
-                        }))
-                    }
-                }
-            }
-        }
-        None // done
-    }
 }
 
 #[inline]

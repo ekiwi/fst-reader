@@ -218,7 +218,7 @@ pub(crate) fn read_c_str(input: &mut impl Read, max_len: usize) -> ReadResult<St
 
 fn write_c_str(output: &mut impl Write, value: &str) -> WriteResult<()> {
     let bytes = value.as_bytes();
-    output.write_all(&bytes)?;
+    output.write_all(bytes)?;
     write_u8(output, 0)?;
     Ok(())
 }
@@ -242,7 +242,7 @@ fn write_c_str_fixed_length(
     if bytes.len() >= max_len {
         todo!("Return error.")
     }
-    output.write_all(&bytes)?;
+    output.write_all(bytes)?;
     let zeros = vec![0u8; max_len - bytes.len()];
     output.write_all(&zeros)?;
     Ok(())
@@ -644,14 +644,14 @@ pub(crate) fn write_hierarchy_bytes(
 }
 
 fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchyEntry> {
-    let parts: Vec<&str> = value.split(" ").collect();
+    let parts: Vec<&str> = value.split(' ').collect();
     if parts.len() < 2 {
         return Err(ReaderError {
             kind: ReaderErrorKind::EnumTableString(),
         });
     }
     let name = parts[0].to_string();
-    let element_count = usize::from_str_radix(parts[1], 10)?;
+    let element_count = parts[1].parse::<usize>()?;
     if parts.len() != 2 + element_count * 2 {
         return Err(ReaderError {
             kind: ReaderErrorKind::EnumTableString(),
@@ -1085,7 +1085,7 @@ fn write_time_chain_data(output: &mut impl Write, table: &[u64]) -> WriteResult<
     }
     Ok(total_len)
 }
-
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn read_frame(
     input: &mut (impl Read + Seek),

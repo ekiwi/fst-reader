@@ -1109,7 +1109,7 @@ pub(crate) fn read_frame(
 
     for idx in 0..(max_handle as usize) {
         let signal_length = signals[idx].len();
-        if signal_filter[idx] {
+        if signal_filter.is_set(idx) {
             let handle = FstSignalHandle::from_index(idx);
             match signal_length {
                 0 => {} // ignore since variable-length records have no initial value

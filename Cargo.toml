@@ -1,6 +1,6 @@
 [package]
 name = "fst-native"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["Kevin Laeufer <laeufer@berkeley.edu>"]
 description = "FST wavedump format reader implemented in safe Rust."
@@ -10,7 +10,6 @@ include = ["Cargo.toml", "LICENSE", "src/"]
 keywords = ["fst", "waveform", "wavedump"]
 
 [dependencies]
-bitvec = "1"
 lz4_flex = "0.11.1"
 flate2 = "1.0"
 num_enum = "0.7.0"

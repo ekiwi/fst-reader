@@ -3,8 +3,6 @@
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 // Contains FST in-memory types.
 
-use bitvec::order::Msb0;
-use bitvec::prelude::BitVec;
 use num_enum::TryFromPrimitive;
 #[cfg(test)]
 use proptest_derive::Arbitrary;
@@ -311,7 +309,41 @@ pub(crate) enum HierarchyCompression {
     Lz4Duo,
 }
 
-pub(crate) type BitMask = BitVec<u8, Msb0>;
+type BitMaskWord = u64;
+
+pub(crate) struct BitMask {
+    inner: Vec<BitMaskWord>,
+}
+
+impl BitMask {
+    pub(crate) fn repeat(value: bool, size: usize) -> Self {
+        let word = if value { BitMaskWord::MAX } else { 0 };
+        let word_count = size.div_ceil(BitMaskWord::BITS as usize);
+        Self {
+            inner: vec![word; word_count],
+        }
+    }
+
+    pub(crate) fn set(&mut self, index: usize, value: bool) {
+        let (word_idx, bit_idx) = Self::word_and_bit_index(index);
+        if value {
+            self.inner[word_idx] |= (1 as BitMaskWord) << bit_idx;
+        } else {
+            self.inner[word_idx] &= !((1 as BitMaskWord) << bit_idx);
+        }
+    }
+
+    fn word_and_bit_index(index: usize) -> (usize, usize) {
+        let word_idx = index / BitMaskWord::BITS as usize;
+        let bit_idx = index - word_idx * BitMaskWord::BITS as usize;
+        (word_idx, bit_idx)
+    }
+
+    pub(crate) fn is_set(&self, index: usize) -> bool {
+        let (word_idx, bit_idx) = Self::word_and_bit_index(index);
+        (self.inner[word_idx] >> bit_idx) & 1 == 1
+    }
+}
 
 pub(crate) struct DataFilter {
     pub(crate) start: u64,

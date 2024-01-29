@@ -439,7 +439,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
             // was there a signal change?
             if *entry != 0 {
                 // is the signal supposed to be included?
-                if self.filter.signals[signal_idx] {
+                if self.filter.signals.is_set(signal_idx) {
                     // read all signal values
                     self.input.seek(SeekFrom::Start(vc_start + entry))?;
                     let mut bytes =

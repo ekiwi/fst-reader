@@ -178,6 +178,33 @@ pub enum FstSignalValue<'a> {
     Real(f64),
 }
 
+/// Quickly scans an input to see if it could be a FST file.
+pub fn is_fst_file(input: &mut (impl Read + Seek)) -> bool {
+    let is_fst = matches!(internal_check_fst_file(input), Ok(true));
+    // try to reset input
+    let _ = input.seek(SeekFrom::Start(0));
+    is_fst
+}
+
+/// Returns an error or false if not an fst. Returns Ok(true) only if we think it is an fst.
+fn internal_check_fst_file(input: &mut (impl Read + Seek)) -> Result<bool> {
+    // try to iterate over all blocks
+    loop {
+        let _block_tpe = match read_block_tpe(input) {
+            Err(ReaderError {
+                kind: ReaderErrorKind::IO(_),
+            }) => {
+                break;
+            }
+            Err(other) => return Err(other),
+            Ok(tpe) => tpe,
+        };
+        let section_length = read_u64(input)?;
+        input.seek(SeekFrom::Current((section_length as i64) - 8))?;
+    }
+    Ok(true)
+}
+
 fn read_hierarchy(
     input: &mut (impl Read + Seek),
     meta: &MetaData,

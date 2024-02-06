@@ -7,6 +7,7 @@
 
 use fst_native::*;
 use std::io::{BufRead, Seek};
+use std::path::{Path, PathBuf};
 
 mod utils;
 use utils::hierarchy_to_str;
@@ -62,4 +63,36 @@ fn load_time_table_treadle_gcd() {
     let reader = FstReader::open_and_read_time_table(std::io::BufReader::new(f)).unwrap();
     let expected = [0u64, 1, 2, 3, 4];
     assert_eq!(reader.get_time_table().unwrap(), expected);
+}
+
+fn find_fst_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().filter_map(Result::ok) {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            let mut sub = find_fst_files(&entry_path);
+            out.append(&mut sub);
+        }
+        if entry_path.to_str().unwrap().ends_with(".fst") {
+            out.push(entry_path);
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn test_is_fst_file() {
+    let fsts = find_fst_files(Path::new("fsts/"));
+    for filename in fsts {
+        let mut f = std::fs::File::open(filename.clone())
+            .unwrap_or_else(|_| panic!("Failed to open {:?}", filename));
+        let is_fst = is_fst_file(&mut f);
+        // this one file seems corrupted
+        let should_be_fst = !filename.to_str().unwrap().ends_with("libsigrok.vcd.fst");
+        assert_eq!(
+            is_fst, should_be_fst,
+            "{filename:?} should be detected as a FST! ({should_be_fst})"
+        );
+    }
 }

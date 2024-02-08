@@ -42,6 +42,13 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
             )
         }
         FstHierarchyEntry::EnumTableRef { handle } => format!("EnumTableRef: {handle}"),
+        FstHierarchyEntry::VhdlVarInfo {
+            type_name,
+            var_type,
+            data_type,
+        } => {
+            format!("VHDL Var Info: {type_name}, {var_type:?}, {data_type:?}")
+        }
     }
 }
 

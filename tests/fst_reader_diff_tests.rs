@@ -58,6 +58,8 @@ fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
         fst_sys::fstScopeType_FST_ST_VCD_TASK => "Task",
         fst_sys::fstScopeType_FST_ST_VCD_FUNCTION => "Function",
         fst_sys::fstScopeType_FST_ST_VCD_BEGIN => "Begin",
+        fst_sys::fstScopeType_FST_ST_VHDL_ARCHITECTURE => "VhdlArchitecture",
+        fst_sys::fstScopeType_FST_ST_VHDL_RECORD => "VhdlRecord",
         other => todo!("scope type: {other}"),
     };
     con.to_string()
@@ -91,10 +93,55 @@ unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierA
                 fst_sys::fstMiscType_FST_MT_COMMENT => {
                     format!("Comment: {name}")
                 }
+                fst_sys::fstMiscType_FST_MT_SUPVAR => {
+                    let type_name = name;
+                    let svt = attr.arg >> fst_sys::fstSupplementalDataType_FST_SDT_SVT_SHIFT_COUNT;
+                    let sdt = attr.arg & (fst_sys::fstSupplementalDataType_FST_SDT_ABS_MAX as u64);
+                    format!(
+                        "VHDL Var Info: {type_name}, {}, {}",
+                        fst_sys_svt_to_str(svt),
+                        fst_sys_sdt_to_str(sdt)
+                    )
+                }
                 other => todo!("misc attribute of subtype {other}"),
             }
         }
         _ => format!("BeginAttr: {name}"),
+    }
+}
+
+fn fst_sys_svt_to_str(svt: u64) -> &'static str {
+    match svt as fst_sys::fstSupplementalVarType {
+        fst_sys::fstSupplementalVarType_FST_SVT_NONE => "None",
+        fst_sys::fstSupplementalVarType_FST_SVT_VHDL_SIGNAL => "Signal",
+        fst_sys::fstSupplementalVarType_FST_SVT_VHDL_VARIABLE => "Variable",
+        fst_sys::fstSupplementalVarType_FST_SVT_VHDL_CONSTANT => "Constant",
+        fst_sys::fstSupplementalVarType_FST_SVT_VHDL_FILE => "File",
+        fst_sys::fstSupplementalVarType_FST_SVT_VHDL_MEMORY => "Memory",
+        _ => "INVALID",
+    }
+}
+
+fn fst_sys_sdt_to_str(sdt: u64) -> &'static str {
+    match sdt as fst_sys::fstSupplementalDataType {
+        fst_sys::fstSupplementalDataType_FST_SDT_NONE => "None",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_BOOLEAN => "Boolean",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_BIT => "Bit",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_BIT_VECTOR => "Vector",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_STD_ULOGIC => "ULogic",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_STD_ULOGIC_VECTOR => "ULogicVector",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_STD_LOGIC => "Logic",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_STD_LOGIC_VECTOR => "LogicVector",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_UNSIGNED => "Unsigned",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_SIGNED => "Signed",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_INTEGER => "Integer",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_REAL => "Real",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_NATURAL => "Natural",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_POSITIVE => "Positive",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_TIME => "Time",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_CHARACTER => "Character",
+        fst_sys::fstSupplementalDataType_FST_SDT_VHDL_STRING => "String",
+        _ => "INVALID",
     }
 }
 
@@ -131,22 +178,19 @@ fn diff_hierarchy<R: std::io::BufRead + std::io::Seek>(
     let mut is_real = Vec::new();
     let check = |entry: FstHierarchyEntry| {
         // remember if variables are real valued
-        match &entry {
-            FstHierarchyEntry::Var { tpe, handle, .. } => {
-                let is_var_real = match tpe {
-                    FstVarType::Real
+        if let FstHierarchyEntry::Var { tpe, handle, .. } = &entry {
+            let is_var_real = matches!(
+                tpe,
+                FstVarType::Real
                     | FstVarType::RealParameter
                     | FstVarType::RealTime
-                    | FstVarType::ShortReal => true,
-                    _ => false,
-                };
-                let idx = handle.get_index();
-                if is_real.len() <= idx {
-                    is_real.resize(idx + 1, false);
-                }
-                is_real[idx] = is_var_real;
+                    | FstVarType::ShortReal
+            );
+            let idx = handle.get_index();
+            if is_real.len() <= idx {
+                is_real.resize(idx + 1, false);
             }
-            _ => {}
+            is_real[idx] = is_var_real;
         };
 
         let expected = exp_hierarchy.pop_front().unwrap();
@@ -296,6 +340,16 @@ fn diff_ghdl_idea() {
 #[test]
 fn diff_ghdl_pcpu() {
     run_diff_test("fsts/ghdl/pcpu.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_ghdl_oscar_ghdl() {
+    run_diff_test("fsts/ghdl/oscar/ghdl.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_ghdl_oscar_vhdl3() {
+    run_diff_test("fsts/ghdl/oscar/vhdl3.fst", &FstFilter::all());
 }
 
 #[test]

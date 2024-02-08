@@ -687,6 +687,9 @@ fn enum_table_to_string(name: &str, mapping: &[(String, String)]) -> String {
     out
 }
 
+const FST_SUP_VAR_DATA_TYPE_BITS: u32 = 10;
+const FST_SUP_VAR_DATA_TYPE_MASK: u64 = (1 << FST_SUP_VAR_DATA_TYPE_BITS) - 1;
+
 fn parse_misc_attribute(
     name: String,
     tpe: MiscType,
@@ -696,7 +699,16 @@ fn parse_misc_attribute(
     let res = match tpe {
         MiscType::Comment => FstHierarchyEntry::Comment { string: name },
         MiscType::EnvVar => todo!("EnvVar Attribute"), // fstWriterSetEnvVar()
-        MiscType::SupVar => todo!("SupVar Attribute"), // fstWriterCreateVar2() (GHDL?)
+        MiscType::SupVar => {
+            // This attribute supplies VHDL specific information and is used by GHDL
+            let var_type = (arg >> FST_SUP_VAR_DATA_TYPE_BITS) as u8;
+            let data_type = (arg & FST_SUP_VAR_DATA_TYPE_MASK) as u8;
+            FstHierarchyEntry::VhdlVarInfo {
+                type_name: name,
+                var_type: FstVhdlVarType::try_from_primitive(var_type)?,
+                data_type: FstVhdlDataType::try_from_primitive(data_type)?,
+            }
+        }
         MiscType::PathName => FstHierarchyEntry::PathName { name, id: arg },
         MiscType::SourceStem => FstHierarchyEntry::SourceStem {
             is_instantiation: false,
@@ -958,6 +970,21 @@ pub(crate) fn write_hierarchy_entry(
             *handle,
             None,
         )?,
+        FstHierarchyEntry::VhdlVarInfo {
+            type_name,
+            var_type,
+            data_type,
+        } => {
+            let arg = ((*var_type as u64) << FST_SUP_VAR_DATA_TYPE_BITS) | (*data_type as u64);
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Misc,
+                MiscType::SupVar,
+                type_name,
+                arg,
+                None,
+            )?;
+        }
         FstHierarchyEntry::AttributeEnd => {
             write_u8(output, HIERARCHY_TPE_VCD_ATTRIBUTE_END)?;
         }
@@ -1431,6 +1458,7 @@ mod tests {
                     })
             }
             FstHierarchyEntry::EnumTableRef { .. } => true,
+            FstHierarchyEntry::VhdlVarInfo { type_name, .. } => is_valid_c_str(type_name, max_len),
             FstHierarchyEntry::AttributeEnd => true,
         }
     }

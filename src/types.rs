@@ -158,6 +158,41 @@ pub enum FstVarDirection {
 }
 
 #[repr(u8)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub enum FstVhdlVarType {
+    None = 0,
+    Signal = 1,
+    Variable = 2,
+    Constant = 3,
+    File = 4,
+    Memory = 5,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub enum FstVhdlDataType {
+    None = 0,
+    Boolean = 1,
+    Bit = 2,
+    Vector = 3,
+    ULogic = 4,
+    ULogicVector = 5,
+    Logic = 6,
+    LogicVector = 7,
+    Unsigned = 8,
+    Signed = 9,
+    Integer = 10,
+    Real = 11,
+    Natural = 12,
+    Positive = 13,
+    Time = 14,
+    Character = 15,
+    String = 16,
+}
+
+#[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
 pub(crate) enum AttributeType {
     Misc = 0,
@@ -297,6 +332,11 @@ pub enum FstHierarchyEntry {
     },
     EnumTableRef {
         handle: u64,
+    },
+    VhdlVarInfo {
+        type_name: String,
+        var_type: FstVhdlVarType,
+        data_type: FstVhdlDataType,
     },
     AttributeEnd,
 }

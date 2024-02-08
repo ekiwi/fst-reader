@@ -8,4 +8,7 @@ mod reader;
 mod types;
 
 pub use reader::{is_fst_file, FstFilter, FstHeader, FstReader, FstSignalValue};
-pub use types::{FstHierarchyEntry, FstScopeType, FstSignalHandle, FstVarDirection, FstVarType};
+pub use types::{
+    FstHierarchyEntry, FstScopeType, FstSignalHandle, FstVarDirection, FstVarType, FstVhdlDataType,
+    FstVhdlVarType,
+};

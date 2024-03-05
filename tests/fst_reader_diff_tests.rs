@@ -58,8 +58,24 @@ fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
         fst_sys::fstScopeType_FST_ST_VCD_TASK => "Task",
         fst_sys::fstScopeType_FST_ST_VCD_FUNCTION => "Function",
         fst_sys::fstScopeType_FST_ST_VCD_BEGIN => "Begin",
+        fst_sys::fstScopeType_FST_ST_VCD_FORK => "Fork",
+        fst_sys::fstScopeType_FST_ST_VCD_GENERATE => "Generate",
+        fst_sys::fstScopeType_FST_ST_VCD_STRUCT => "Struct",
+        fst_sys::fstScopeType_FST_ST_VCD_UNION => "Union",
+        fst_sys::fstScopeType_FST_ST_VCD_CLASS => "Class",
+        fst_sys::fstScopeType_FST_ST_VCD_INTERFACE => "Interface",
+        fst_sys::fstScopeType_FST_ST_VCD_PACKAGE => "Package",
+        fst_sys::fstScopeType_FST_ST_VCD_PROGRAM => "Program",
         fst_sys::fstScopeType_FST_ST_VHDL_ARCHITECTURE => "VhdlArchitecture",
+        fst_sys::fstScopeType_FST_ST_VHDL_PROCEDURE => "VhdlProcedure",
+        fst_sys::fstScopeType_FST_ST_VHDL_FUNCTION => "VhdlFunction",
         fst_sys::fstScopeType_FST_ST_VHDL_RECORD => "VhdlRecord",
+        fst_sys::fstScopeType_FST_ST_VHDL_PROCESS => "VhdlProcess",
+        fst_sys::fstScopeType_FST_ST_VHDL_BLOCK => "VhdlBlock",
+        fst_sys::fstScopeType_FST_ST_VHDL_FOR_GENERATE => "VhdlForGenerate",
+        fst_sys::fstScopeType_FST_ST_VHDL_IF_GENERATE => "VhdlIfGenerate",
+        fst_sys::fstScopeType_FST_ST_VHDL_GENERATE => "VhdlGenerate",
+        fst_sys::fstScopeType_FST_ST_VHDL_PACKAGE => "VhdlPackage",
         other => todo!("scope type: {other}"),
     };
     con.to_string()
@@ -496,6 +512,12 @@ fn diff_verilator_basic_test() {
 #[test]
 fn diff_verilator_many_sv_data_types() {
     run_diff_test("fsts/verilator/many_sv_datatypes.fst", &FstFilter::all());
+}
+
+// FST reported in https://gitlab.com/surfer-project/surfer/-/issues/201
+#[test]
+fn diff_verilator_surfer_issue_201() {
+    run_diff_test("fsts/verilator/surfer_issue_201.fst", &FstFilter::all());
 }
 
 #[test]

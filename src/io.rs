@@ -1549,6 +1549,16 @@ mod tests {
         }
     }
 
+    // test with some manually chosen entries
+    #[test]
+    fn test_read_write_hierarchy_entry() {
+        // make sure that we can write and read long attributes
+        let entry = FstHierarchyEntry::Comment {
+            string: "TEST ".repeat((8000 + 4) / 5),
+        };
+        read_write_hierarchy_entry(entry);
+    }
+
     proptest! {
         #[test]
         fn test_prop_read_write_hierarchy_bytes(tpe: HierarchyCompression, bytes: Vec<u8>) {

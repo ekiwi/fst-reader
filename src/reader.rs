@@ -191,9 +191,7 @@ fn internal_check_fst_file(input: &mut (impl Read + Seek)) -> Result<bool> {
     // try to iterate over all blocks
     loop {
         let _block_tpe = match read_block_tpe(input) {
-            Err(ReaderError {
-                kind: ReaderErrorKind::IO(_),
-            }) => {
+            Err(ReaderError::Io(_)) => {
                 break;
             }
             Err(other) => return Err(other),
@@ -250,8 +248,7 @@ fn uncompress_gzip_wrapper(
         let section_length = read_u64(input)?;
         let uncompress_length = read_u64(input)? as usize;
         if section_length == 0 {
-            let kind = ReaderErrorKind::NotFinishedCompressing();
-            return Err(ReaderError { kind });
+            return Err(ReaderError::NotFinishedCompressing());
         }
 
         let mut target = tempfile::tempfile().unwrap();
@@ -367,9 +364,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         }
         loop {
             let block_tpe = match read_block_tpe(&mut self.input) {
-                Err(ReaderError {
-                    kind: ReaderErrorKind::IO(_),
-                }) => {
+                Err(ReaderError::Io(_)) => {
                     break;
                 }
                 Err(other) => return Err(other),

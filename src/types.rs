@@ -49,7 +49,7 @@ pub(crate) enum FloatingPointEndian {
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
-pub(crate) enum FileType {
+pub enum FileType {
     Verilog = 0,
     Vhdl = 1,
     VerilogVhdl = 2,
@@ -57,7 +57,7 @@ pub(crate) enum FileType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
-pub(crate) enum BlockType {
+pub enum BlockType {
     Header = 0,
     VcData = 1,
     Blackout = 2,
@@ -194,7 +194,7 @@ pub enum FstVhdlDataType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
-pub(crate) enum AttributeType {
+pub enum AttributeType {
     Misc = 0,
     Array = 1,
     Enum = 2,
@@ -203,7 +203,7 @@ pub(crate) enum AttributeType {
 
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
-pub(crate) enum MiscType {
+pub enum MiscType {
     Comment = 0,
     EnvVar = 1,
     SupVar = 2,

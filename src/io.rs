@@ -8,71 +8,49 @@ use crate::FstSignalValue;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom, Write};
+use thiserror::Error;
 
-#[derive(Debug)]
-pub enum ReaderErrorKind {
-    IO(std::io::Error),
-    FromPrimitive(),
-    StringParse(std::str::Utf8Error),
-    StringParse2(std::string::FromUtf8Error),
-    ParseVariant(),
-    DecompressLz4(lz4_flex::block::DecompressError),
-    /// The FST file is still being compressed into its final GZIP wrapper.
+#[derive(Debug, Error)]
+pub enum ReaderError {
+    #[error("failed to parse an enum table string: {0}\n{1}")]
+    EnumTableString(String, String),
+    #[error("failed to read leb128 integer, more than the expected {0} bits")]
+    Leb128(u32),
+    #[error("failed to parse an integer")]
+    ParseInt(#[from] std::num::ParseIntError),
+    #[error("failed to decompress with lz4")]
+    Lz4Decompress(#[from] lz4_flex::block::DecompressError),
+    #[error("failed to decode string")]
+    Utf8(#[from] std::str::Utf8Error),
+    #[error("failed to decode string")]
+    Utf8String(#[from] std::string::FromUtf8Error),
+    #[error("I/O operation failed")]
+    Io(#[from] std::io::Error),
+    #[error("The FST file is still being compressed into its final GZIP wrapper.")]
     NotFinishedCompressing(),
-    /// Failed to parse the string contained in an enum table attribute.
-    EnumTableString(),
-    ParseInt(std::num::ParseIntError),
-}
-#[derive(Debug)]
-pub struct ReaderError {
-    pub(crate) kind: ReaderErrorKind,
-}
-
-impl From<std::io::Error> for ReaderError {
-    fn from(value: std::io::Error) -> Self {
-        let kind = ReaderErrorKind::IO(value);
-        ReaderError { kind }
-    }
-}
-
-impl<Enum: TryFromPrimitive> From<TryFromPrimitiveError<Enum>> for ReaderError {
-    fn from(_value: TryFromPrimitiveError<Enum>) -> Self {
-        let kind = ReaderErrorKind::FromPrimitive();
-        ReaderError { kind }
-    }
+    #[error("Unexpected block type")]
+    BlockType(#[from] TryFromPrimitiveError<BlockType>),
+    #[error("Unexpected file type")]
+    FileType(#[from] TryFromPrimitiveError<FileType>),
+    #[error("Unexpected vhdl variable type")]
+    FstVhdlVarType(#[from] TryFromPrimitiveError<FstVhdlVarType>),
+    #[error("Unexpected vhdl data type")]
+    FstVhdlDataType(#[from] TryFromPrimitiveError<FstVhdlDataType>),
+    #[error("Unexpected variable type")]
+    FstVarType(#[from] TryFromPrimitiveError<FstVarType>),
+    #[error("Unexpected scope type")]
+    FstScopeType(#[from] TryFromPrimitiveError<FstScopeType>),
+    #[error("Unexpected variable direction")]
+    FstVarDirection(#[from] TryFromPrimitiveError<FstVarDirection>),
+    #[error("Unexpected attribute type")]
+    AttributeType(#[from] TryFromPrimitiveError<AttributeType>),
+    #[error("Unexpected misc attribute type")]
+    MiscType(#[from] TryFromPrimitiveError<MiscType>),
 }
 
-impl From<std::str::Utf8Error> for ReaderError {
-    fn from(value: std::str::Utf8Error) -> Self {
-        let kind = ReaderErrorKind::StringParse(value);
-        ReaderError { kind }
-    }
-}
+pub type ReadResult<T> = Result<T, ReaderError>;
 
-impl From<std::string::FromUtf8Error> for ReaderError {
-    fn from(value: std::string::FromUtf8Error) -> Self {
-        let kind = ReaderErrorKind::StringParse2(value);
-        ReaderError { kind }
-    }
-}
-
-impl From<lz4_flex::block::DecompressError> for ReaderError {
-    fn from(value: lz4_flex::block::DecompressError) -> Self {
-        let kind = ReaderErrorKind::DecompressLz4(value);
-        ReaderError { kind }
-    }
-}
-
-impl From<std::num::ParseIntError> for ReaderError {
-    fn from(value: std::num::ParseIntError) -> Self {
-        let kind = ReaderErrorKind::ParseInt(value);
-        ReaderError { kind }
-    }
-}
-
-pub type ReadResult<T> = std::result::Result<T, ReaderError>;
-
-pub type WriteResult<T> = std::result::Result<T, ReaderError>;
+pub type WriteResult<T> = Result<T, ReaderError>;
 
 //////////////// Primitives
 
@@ -89,9 +67,7 @@ pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> 
             return Ok((res, ii + 1));
         }
     }
-    Err(ReaderError {
-        kind: ReaderErrorKind::ParseVariant(),
-    })
+    Err(ReaderError::Leb128(32))
 }
 
 #[inline]
@@ -113,9 +89,7 @@ pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
             return Ok(res);
         }
     }
-    Err(ReaderError {
-        kind: ReaderErrorKind::ParseVariant(),
-    })
+    Err(ReaderError::Leb128(64))
 }
 
 #[inline]
@@ -131,9 +105,7 @@ pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<(u64, usize)
             return Ok((res, ii + 1));
         }
     }
-    Err(ReaderError {
-        kind: ReaderErrorKind::ParseVariant(),
-    })
+    Err(ReaderError::Leb128(64))
 }
 
 #[inline]
@@ -646,16 +618,23 @@ pub(crate) fn write_hierarchy_bytes(
 fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchyEntry> {
     let parts: Vec<&str> = value.split(' ').collect();
     if parts.len() < 2 {
-        return Err(ReaderError {
-            kind: ReaderErrorKind::EnumTableString(),
-        });
+        return Err(ReaderError::EnumTableString(
+            "not enough spaces".to_string(),
+            value,
+        ));
     }
     let name = parts[0].to_string();
     let element_count = parts[1].parse::<usize>()?;
-    if parts.len() != 2 + element_count * 2 {
-        return Err(ReaderError {
-            kind: ReaderErrorKind::EnumTableString(),
-        });
+    let expected_part_len = element_count * 2;
+    if parts.len() - 2 != expected_part_len {
+        return Err(ReaderError::EnumTableString(
+            format!(
+                "expected {} parts got {}",
+                expected_part_len,
+                parts.len() - 2
+            ),
+            value,
+        ));
     }
     let mut mapping = Vec::with_capacity(element_count);
     for ii in 0..element_count {

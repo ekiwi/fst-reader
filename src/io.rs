@@ -12,6 +12,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ReaderError {
+    #[error("failed to read a null terminated string because it exceeds the expected size of {0} bytes.\n{1}")]
+    CStringTooLong(usize, String),
     #[error("failed to parse an enum table string: {0}\n{1}")]
     EnumTableString(String, String),
     #[error("failed to read leb128 integer, more than the expected {0} bits")]
@@ -180,12 +182,15 @@ pub(crate) fn read_c_str(input: &mut impl Read, max_len: usize) -> ReadResult<St
     for _ in 0..max_len {
         let byte = read_u8(input)?;
         if byte == 0 {
-            break;
+            return Ok(String::from_utf8(bytes)?);
         } else {
             bytes.push(byte);
         }
     }
-    Ok(String::from_utf8(bytes)?)
+    Err(ReaderError::CStringTooLong(
+        max_len,
+        String::from_utf8_lossy(&bytes).to_string(),
+    ))
 }
 
 fn write_c_str(output: &mut impl Write, value: &str) -> WriteResult<()> {

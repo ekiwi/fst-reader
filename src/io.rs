@@ -1134,19 +1134,20 @@ pub(crate) fn read_frame(
         read_zlib_compressed_bytes(input, uncompressed_length, compressed_length, true)?;
     let mut bytes = std::io::Cursor::new(bytes_vec);
 
-    for idx in 0..(max_handle as usize) {
-        let signal_length = signals[idx].len();
+    assert_eq!(signals.len(), max_handle as usize);
+    for (idx, signal) in signals.iter().enumerate() {
+        let signal_length = signal.len();
         if signal_filter.is_set(idx) {
             let handle = FstSignalHandle::from_index(idx);
             match signal_length {
                 0 => {} // ignore since variable-length records have no initial value
                 len => {
-                    if !signals[idx].is_real() {
+                    if !signal.is_real() {
                         let value = read_bytes(&mut bytes, len as usize)?;
-                        (callback)(start_time, handle, FstSignalValue::String(&value));
+                        callback(start_time, handle, FstSignalValue::String(&value));
                     } else {
                         let value = read_f64(&mut bytes, float_endian)?;
-                        (callback)(start_time, handle, FstSignalValue::Real(value));
+                        callback(start_time, handle, FstSignalValue::Real(value));
                     }
                 }
             }
@@ -1252,7 +1253,7 @@ fn read_value_change_alias(
     Ok((chain_table, chain_table_lengths, prev_idx))
 }
 
-fn fixup_chain_table(chain_table: &mut Vec<u64>, chain_lengths: &mut Vec<u32>) {
+fn fixup_chain_table(chain_table: &mut [u64], chain_lengths: &mut [u32]) {
     assert_eq!(chain_table.len(), chain_lengths.len());
     for ii in 0..chain_table.len() {
         let v32 = chain_lengths[ii] as i32;
@@ -1478,12 +1479,15 @@ mod tests {
 
     /// ensures that ports are not too wide
     fn hierarchy_entry_with_valid_port_width(entry: &FstHierarchyEntry) -> bool {
-        match entry {
-            FstHierarchyEntry::Var { tpe, length, .. } => match tpe {
-                FstVarType::Port => *length < (u32::MAX / 3) - 2,
-                _ => true,
-            },
-            _ => true,
+        if let FstHierarchyEntry::Var {
+            tpe: FstVarType::Port,
+            length,
+            ..
+        } = entry
+        {
+            *length < (u32::MAX / 3) - 2
+        } else {
+            true
         }
     }
 

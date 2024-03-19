@@ -792,7 +792,7 @@ pub(crate) fn read_hierarchy_entry(
                             ("".to_string(), Some(arg2))
                         }
                         _ => {
-                            let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+                            let name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
                             (name, None)
                         }
                     };

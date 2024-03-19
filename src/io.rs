@@ -1441,25 +1441,34 @@ mod tests {
     }
 
     /// ensures that no string contains zero bytes or is longer than max_len
-    fn hierarchy_entry_with_valid_c_strings(entry: &FstHierarchyEntry, max_len: usize) -> bool {
+    fn hierarchy_entry_with_valid_c_strings(entry: &FstHierarchyEntry) -> bool {
         match entry {
             FstHierarchyEntry::Scope {
                 name, component, ..
-            } => is_valid_c_str(name, max_len) && is_valid_c_str(component, max_len),
+            } => {
+                is_valid_c_str(name, HIERARCHY_NAME_MAX_SIZE)
+                    && is_valid_c_str(component, HIERARCHY_NAME_MAX_SIZE)
+            }
             FstHierarchyEntry::UpScope => true,
-            FstHierarchyEntry::Var { name, .. } => is_valid_c_str(name, max_len),
-            FstHierarchyEntry::PathName { name, .. } => is_valid_c_str(name, max_len),
+            FstHierarchyEntry::Var { name, .. } => is_valid_c_str(name, HIERARCHY_NAME_MAX_SIZE),
+            FstHierarchyEntry::PathName { name, .. } => {
+                is_valid_c_str(name, HIERARCHY_ATTRIBUTE_MAX_SIZE)
+            }
             FstHierarchyEntry::SourceStem { .. } => true,
-            FstHierarchyEntry::Comment { string } => is_valid_c_str(string, max_len),
+            FstHierarchyEntry::Comment { string } => {
+                is_valid_c_str(string, HIERARCHY_ATTRIBUTE_MAX_SIZE)
+            }
             FstHierarchyEntry::EnumTable { name, mapping, .. } => {
-                is_valid_alphanumeric_c_str(name, max_len)
+                is_valid_alphanumeric_c_str(name, HIERARCHY_ATTRIBUTE_MAX_SIZE)
                     && mapping.iter().all(|(k, v)| {
-                        is_valid_alphanumeric_c_str(k, max_len)
-                            && is_valid_alphanumeric_c_str(v, max_len)
+                        is_valid_alphanumeric_c_str(k, HIERARCHY_ATTRIBUTE_MAX_SIZE)
+                            && is_valid_alphanumeric_c_str(v, HIERARCHY_ATTRIBUTE_MAX_SIZE)
                     })
             }
             FstHierarchyEntry::EnumTableRef { .. } => true,
-            FstHierarchyEntry::VhdlVarInfo { type_name, .. } => is_valid_c_str(type_name, max_len),
+            FstHierarchyEntry::VhdlVarInfo { type_name, .. } => {
+                is_valid_c_str(type_name, HIERARCHY_NAME_MAX_SIZE)
+            }
             FstHierarchyEntry::AttributeEnd => true,
         }
     }
@@ -1533,7 +1542,7 @@ mod tests {
     proptest! {
         #[test]
         fn test_prop_read_write_hierarchy_entry(entry: FstHierarchyEntry) {
-            prop_assume!(hierarchy_entry_with_valid_c_strings(&entry, HIERARCHY_NAME_MAX_SIZE));
+            prop_assume!(hierarchy_entry_with_valid_c_strings(&entry));
             prop_assume!(hierarchy_entry_with_valid_mapping(&entry));
             prop_assume!(hierarchy_entry_with_valid_port_width(&entry));
             read_write_hierarchy_entry(entry);

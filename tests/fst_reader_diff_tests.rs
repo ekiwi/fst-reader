@@ -431,6 +431,23 @@ fn diff_ncsim_ffdiv() {
     run_diff_test("fsts/ncsim/ffdiv_32bit_tb.vcd.fst", &FstFilter::all());
 }
 
+/// This file was provided by Augusto Fraga Giachero in the following issue:
+/// https://github.com/ekiwi/wellen/issues/9
+#[test]
+fn diff_nvc_xwb_fofb_shaper_filt_tb() {
+    run_diff_test("fsts/nvc/xwb_fofb_shaper_filt_tb.fst", &FstFilter::all());
+}
+
+/// This file was provided by Augusto Fraga Giachero in the following issue:
+/// https://github.com/ekiwi/wellen/issues/10
+#[test]
+fn diff_nvc_xwb_fofb_shaper_filt_tb_arrays() {
+    run_diff_test(
+        "fsts/nvc/xwb_fofb_shaper_filt_tb_arrays.fst",
+        &FstFilter::all(),
+    );
+}
+
 #[test]
 fn diff_quartus_mips_hardware() {
     run_diff_test("fsts/quartus/mipsHardware.vcd.fst", &FstFilter::all());

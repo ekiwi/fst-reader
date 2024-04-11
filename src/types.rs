@@ -37,9 +37,6 @@ impl std::fmt::Display for FstSignalHandle {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct EnumHandle(u32);
-
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum FloatingPointEndian {
     Little,

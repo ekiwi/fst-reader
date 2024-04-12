@@ -168,7 +168,7 @@ Yosys uses the `fstReader` API from [`kernel/fstdata.cc`](https://github.com/Yos
 
 
 ### Others
-- [`nvc` VHDL Compiler and Simulator](https://github.com/kasi09/nvc)
+- [`nvc` VHDL Compiler and Simulator](https://github.com/nickg/nvc)
 - [SCViewer (waveform viewer for Eclipse)](https://github.com/Minres/SCViewer)
 - [SystemC-Components](https://github.com/uzleosharif/SystemC-Components/blob/5b65d825766dd2e5359230b0451a23edaeba8d29/src/sysc/scc/fst_trace.cpp#L148)
 - [Tachyon-DA CVC Verilog Simulator](https://github.com/cambridgehackers/open-src-cvc)

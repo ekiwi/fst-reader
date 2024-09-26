@@ -4,6 +4,7 @@
 
 use crate::io::*;
 use crate::types::*;
+use std::io::Cursor;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
@@ -14,7 +15,7 @@ pub struct FstReader<R: BufRead + Seek> {
 
 enum InputVariant<R: BufRead + Seek> {
     Original(R),
-    Uncompressed(BufReader<std::fs::File>),
+    Uncompressed(BufReader<Cursor<Vec<u8>>>),
 }
 
 pub struct FstFilter {
@@ -237,7 +238,7 @@ fn read_signals(
 /// to a temp file which is returned.
 fn uncompress_gzip_wrapper(
     input: &mut (impl Read + Seek),
-) -> Result<Option<BufReader<std::fs::File>>> {
+) -> Result<Option<BufReader<Cursor<Vec<u8>>>>> {
     let block_tpe = read_block_tpe(input)?;
     if block_tpe != BlockType::GZipWrapper {
         // no gzip wrapper
@@ -251,7 +252,7 @@ fn uncompress_gzip_wrapper(
             return Err(ReaderError::NotFinishedCompressing());
         }
 
-        let mut target = tempfile::tempfile().unwrap();
+        let mut target = Cursor::new(vec![]);
         let mut decoder = flate2::read::GzDecoder::new(input);
         let mut buf = vec![0u8; 32768]; // FST_GZIO_LEN
         let mut remaining = uncompress_length;

@@ -13,7 +13,6 @@ keywords = ["fst", "waveform", "wavedump"]
 lz4_flex = "0.11.1"
 flate2 = "1.0"
 num_enum = "0.7.0"
-tempfile = "3"
 thiserror = "1.0.58"
 
 [dev-dependencies]

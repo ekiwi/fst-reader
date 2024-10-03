@@ -248,11 +248,6 @@ pub(crate) fn multi_bit_digital_signal_to_chars(bytes: &[u8], len: usize) -> Vec
     chars
 }
 
-#[inline]
-pub(crate) fn int_div_ceil(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
-}
-
 pub(crate) fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> ReadResult<usize> {
     let mut slice = &bytes[(offset as usize)..];
     let (vli, _) = read_variant_u32(&mut slice)?;

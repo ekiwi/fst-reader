@@ -559,7 +559,7 @@ impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataRea
                         if !self.meta.signals[signal_id].is_real() {
                             let (value, len) = if (vli & 1) == 0 {
                                 // if bit0 is zero -> 2-state
-                                let read_len = int_div_ceil(signal_len, 8);
+                                let read_len = signal_len.div_ceil(8);
                                 let bytes = read_bytes(&mut mu_slice, read_len)?;
                                 (
                                     multi_bit_digital_signal_to_chars(&bytes, signal_len),

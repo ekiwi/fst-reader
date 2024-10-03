@@ -15,6 +15,7 @@ pub struct FstReader<R: BufRead + Seek> {
 enum InputVariant<R: BufRead + Seek> {
     Original(R),
     Uncompressed(BufReader<std::fs::File>),
+    UncompressedInMem(std::io::Cursor<Vec<u8>>),
 }
 
 pub struct FstFilter {
@@ -88,7 +89,7 @@ impl<R: BufRead + Seek> FstReader<R> {
     fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
         let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
         match uncompressed_input {
-            None => {
+            UncompressGzipWrapper::None => {
                 let mut header_reader = HeaderReader::new(input);
                 header_reader.read(read_time_table)?;
                 let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
@@ -97,12 +98,21 @@ impl<R: BufRead + Seek> FstReader<R> {
                     meta,
                 })
             }
-            Some(uc) => {
+            UncompressGzipWrapper::TempFile(uc) => {
                 let mut header_reader = HeaderReader::new(uc);
                 header_reader.read(read_time_table)?;
                 let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
                 Ok(FstReader {
                     input: InputVariant::Uncompressed(uc2),
+                    meta,
+                })
+            }
+            UncompressGzipWrapper::InMemory(uc) => {
+                let mut header_reader = HeaderReader::new(uc);
+                header_reader.read(read_time_table)?;
+                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::UncompressedInMem(uc2),
                     meta,
                 })
             }
@@ -133,6 +143,7 @@ impl<R: BufRead + Seek> FstReader<R> {
         match &mut self.input {
             InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
             InputVariant::Uncompressed(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
         }
     }
 
@@ -167,6 +178,9 @@ impl<R: BufRead + Seek> FstReader<R> {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
             InputVariant::Uncompressed(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
+            InputVariant::UncompressedInMem(input) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
         }
@@ -233,16 +247,20 @@ fn read_signals(
     reader.read()
 }
 
+enum UncompressGzipWrapper {
+    None,
+    TempFile(BufReader<std::fs::File>),
+    InMemory(std::io::Cursor<Vec<u8>>),
+}
+
 /// Checks to see if the whole file is compressed in which case it is decompressed
 /// to a temp file which is returned.
-fn uncompress_gzip_wrapper(
-    input: &mut (impl Read + Seek),
-) -> Result<Option<BufReader<std::fs::File>>> {
+fn uncompress_gzip_wrapper(input: &mut (impl Read + Seek)) -> Result<UncompressGzipWrapper> {
     let block_tpe = read_block_tpe(input)?;
     if block_tpe != BlockType::GZipWrapper {
         // no gzip wrapper
         input.seek(SeekFrom::Start(0))?;
-        Ok(None)
+        Ok(UncompressGzipWrapper::None)
     } else {
         // uncompress
         let section_length = read_u64(input)?;
@@ -251,21 +269,37 @@ fn uncompress_gzip_wrapper(
             return Err(ReaderError::NotFinishedCompressing());
         }
 
-        let mut target = tempfile::tempfile().unwrap();
-        let mut decoder = flate2::read::GzDecoder::new(input);
-        let mut buf = vec![0u8; 32768]; // FST_GZIO_LEN
-        let mut remaining = uncompress_length;
-        while remaining > 0 {
-            let read_len = std::cmp::min(buf.len(), remaining);
-            remaining -= read_len;
-            decoder.read_exact(&mut buf[..read_len])?;
-            target.write_all(&buf[..read_len])?;
+        // try to use a tempfile
+        if let Ok(mut target) = tempfile::tempfile() {
+            decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
+            // go to start of new file and return
+            target.seek(SeekFrom::Start(0))?;
+            let new_input = std::io::BufReader::new(target);
+            Ok(UncompressGzipWrapper::TempFile(new_input))
+        } else {
+            // otherwise decompress into memory
+            let mut target = vec![];
+            decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
+            let new_input = std::io::Cursor::new(target);
+            Ok(UncompressGzipWrapper::InMemory(new_input))
         }
-        // go to start of new file and return
-        target.seek(SeekFrom::Start(0))?;
-        let new_input = std::io::BufReader::new(target);
-        Ok(Some(new_input))
     }
+}
+
+fn decompress_gz_in_chunks(
+    input: &mut (impl Read + Seek),
+    mut remaining: usize,
+    target: &mut impl Write,
+) -> Result<()> {
+    let mut decoder = flate2::read::GzDecoder::new(input);
+    let mut buf = vec![0u8; 32768]; // FST_GZIO_LEN
+    while remaining > 0 {
+        let read_len = std::cmp::min(buf.len(), remaining);
+        remaining -= read_len;
+        decoder.read_exact(&mut buf[..read_len])?;
+        target.write_all(&buf[..read_len])?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

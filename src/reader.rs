@@ -470,7 +470,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
         section_start: u64,
         section_length: u64,
         time_section_length: u64,
-        time_chain: &[u64],
+        time_table: &[u64],
     ) -> Result<()> {
         let (max_handle, _) = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
@@ -478,7 +478,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
 
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
-        let (chain_table, chain_table_lengths) = read_chain_table(
+        let signal_offsets = read_signal_locs(
             &mut self.input,
             chain_len_offset,
             section_kind,
@@ -488,53 +488,39 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
 
         // read data and create a bunch of pointers
         let mut mu: Vec<u8> = Vec::new();
-        let mut head_pointer: Vec<u32> = Vec::with_capacity(max_handle as usize);
-        let mut length_remaining: Vec<u32> = Vec::with_capacity(max_handle as usize);
+        let mut head_pointer = vec![0u32; max_handle as usize];
+        let mut length_remaining = vec![0u32; max_handle as usize];
         let mut scatter_pointer = vec![0u32; max_handle as usize];
-        let mut tc_head = vec![0u32; std::cmp::max(1, time_chain.len())];
+        let mut tc_head = vec![0u32; std::cmp::max(1, time_table.len())];
 
-        for (signal_idx, (entry, length)) in chain_table
-            .iter()
-            .zip(chain_table_lengths.iter())
-            .take(max_handle as usize)
-            .enumerate()
-        {
-            // was there a signal change?
-            if *entry != 0 {
-                // is the signal supposed to be included?
-                if self.filter.signals.is_set(signal_idx) {
-                    // read all signal values
-                    self.input.seek(SeekFrom::Start(vc_start + entry))?;
-                    let mut bytes =
-                        read_packed_signal_value_bytes(&mut self.input, *length, packtpe)?;
+        for entry in signal_offsets.iter() {
+            // is the signal supposed to be included?
+            if self.filter.signals.is_set(entry.signal_idx) {
+                // read all signal values
+                self.input.seek(SeekFrom::Start(vc_start + entry.offset))?;
+                let mut bytes =
+                    read_packed_signal_value_bytes(&mut self.input, entry.len, packtpe)?;
 
-                    // read first time delta
-                    let len = self.meta.signals[signal_idx].len();
-                    let tdelta = if len == 1 {
-                        read_one_bit_signal_time_delta(&bytes, 0)?
-                    } else {
-                        read_multi_bit_signal_time_delta(&bytes, 0)?
-                    };
+                // read first time delta
+                let len = self.meta.signals[entry.signal_idx].len();
+                let tdelta = if len == 1 {
+                    read_one_bit_signal_time_delta(&bytes, 0)?
+                } else {
+                    read_multi_bit_signal_time_delta(&bytes, 0)?
+                };
 
-                    // remember where we stored the signal data and how long it is
-                    head_pointer.push(mu.len() as u32);
-                    length_remaining.push(bytes.len() as u32);
-                    mu.append(&mut bytes);
+                // remember where we stored the signal data and how long it is
+                head_pointer[entry.signal_idx] = mu.len() as u32;
+                length_remaining[entry.signal_idx] = bytes.len() as u32;
+                mu.append(&mut bytes);
 
-                    // remember at what time step we will read this signal
-                    scatter_pointer[signal_idx] = tc_head[tdelta];
-                    tc_head[tdelta] = signal_idx as u32 + 1; // index to handle
-                }
-            }
-            // if there was no real value added, we add dummy values to ensure that we can
-            // index the Vec with the signal ID
-            if head_pointer.len() == signal_idx {
-                head_pointer.push(1234);
-                length_remaining.push(1234);
+                // remember at what time step we will read this signal
+                scatter_pointer[entry.signal_idx] = tc_head[tdelta];
+                tc_head[tdelta] = entry.signal_idx as u32 + 1; // index to handle
             }
         }
 
-        for (time_id, time) in time_chain.iter().enumerate() {
+        for (time_id, time) in time_table.iter().enumerate() {
             // while we cannot ignore signal changes before the start of the window
             // (since the signal might retain values for multiple cycles),
             // signal changes after our window are completely useless

@@ -8,6 +8,7 @@ use crate::FstSignalValue;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU32;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -1149,112 +1150,207 @@ pub(crate) fn skip_frame(input: &mut (impl Read + Seek), section_start: u64) -> 
     Ok(())
 }
 
-#[inline]
-fn push_zeros(chain_table: &mut Vec<u64>, zeros: u32) {
-    for _ in 0..zeros {
-        chain_table.push(0);
+/// Table of signal offsets inside a data block.
+#[derive(Debug)]
+pub(crate) struct OffsetTable(Vec<SignalDataLoc>);
+
+impl From<Vec<SignalDataLoc>> for OffsetTable {
+    fn from(value: Vec<SignalDataLoc>) -> Self {
+        Self(value)
+    }
+}
+
+impl OffsetTable {
+    pub(crate) fn iter(&self) -> OffsetTableIter {
+        OffsetTableIter {
+            table: self,
+            signal_idx: 0,
+        }
+    }
+
+    fn get_entry(&self, signal_idx: usize) -> Option<OffsetEntry> {
+        match &self.0[signal_idx] {
+            SignalDataLoc::None => None,
+            // aliases should always directly point to an offset,
+            // so we should not have to recurse!
+            SignalDataLoc::Alias(alias_idx) => match &self.0[*alias_idx as usize] {
+                SignalDataLoc::Offset(offset, len) => Some(OffsetEntry {
+                    signal_idx,
+                    offset: offset.get() as u64,
+                    len: len.get(),
+                }),
+                _ => unreachable!("aliases should always directly point to an offset"),
+            },
+            SignalDataLoc::Offset(offset, len) => Some(OffsetEntry {
+                signal_idx,
+                offset: offset.get() as u64,
+                len: len.get(),
+            }),
+        }
+    }
+}
+
+pub(crate) struct OffsetTableIter<'a> {
+    table: &'a OffsetTable,
+    signal_idx: usize,
+}
+
+pub(crate) struct OffsetEntry {
+    pub(crate) signal_idx: usize,
+    pub(crate) offset: u64,
+    pub(crate) len: u32,
+}
+impl Iterator for OffsetTableIter<'_> {
+    type Item = OffsetEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // get the first entry which is not None
+        while self.signal_idx < self.table.0.len()
+            && matches!(self.table.0[self.signal_idx], SignalDataLoc::None)
+        {
+            self.signal_idx += 1
+        }
+
+        // did we reach the end?
+        if self.signal_idx >= self.table.0.len() {
+            return None;
+        }
+
+        // increment id for next call
+        self.signal_idx += 1;
+
+        // return result
+        let res = self.table.get_entry(self.signal_idx - 1);
+        debug_assert!(res.is_some());
+        res
     }
 }
 
 fn read_value_change_alias2(
     mut chain_bytes: &[u8],
     max_handle: u64,
-) -> ReadResult<(Vec<u64>, Vec<u32>, usize)> {
-    let mut chain_table: Vec<u64> = Vec::with_capacity(max_handle as usize);
-    let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
-    let mut value = 0u64;
+    last_table_entry: u32,
+) -> ReadResult<OffsetTable> {
+    let mut table = Vec::with_capacity(max_handle as usize);
+    let mut offset: Option<NonZeroU32> = None;
     let mut prev_alias = 0u32;
-    let mut prev_idx = 0usize;
+    let mut prev_offset_idx = 0usize;
     while !chain_bytes.is_empty() {
-        let idx = chain_table.len();
+        let idx = table.len();
         let kind = chain_bytes[0];
         if (kind & 1) == 1 {
             let shval = read_variant_i64(&mut chain_bytes)? >> 1;
             match shval.cmp(&0) {
                 Ordering::Greater => {
-                    value = (value as i64 + shval) as u64;
-                    if !chain_table.is_empty() {
-                        let len = (value - chain_table[prev_idx]) as u32;
-                        chain_table_lengths[prev_idx] = len;
+                    // a new incremental offset
+                    let new_offset = NonZeroU32::new(
+                        (offset.map(|o| o.get()).unwrap_or_default() as i64 + shval) as u32,
+                    )
+                    .unwrap();
+                    // if there was a previous entry, we need to update the length
+                    if let Some(prev_offset) = offset {
+                        let len = NonZeroU32::new(new_offset.get() - prev_offset.get()).unwrap();
+                        table[prev_offset_idx] = SignalDataLoc::Offset(prev_offset, len);
                     }
-                    prev_idx = idx;
-                    chain_table.push(value);
+                    offset = Some(new_offset);
+                    prev_offset_idx = idx;
+                    // push a placeholder which will be replaced as soon as we know the length
+                    table.push(SignalDataLoc::None);
                 }
                 Ordering::Less => {
-                    chain_table.push(0);
-                    prev_alias = shval as u32;
-                    chain_table_lengths[idx] = prev_alias;
+                    // new signal alias
+                    prev_alias = (-shval - 1) as u32;
+                    table.push(SignalDataLoc::Alias(prev_alias));
                 }
                 Ordering::Equal => {
-                    chain_table.push(0);
-                    chain_table_lengths[idx] = prev_alias;
+                    // same signal alias as previous signal
+                    table.push(SignalDataLoc::Alias(prev_alias));
                 }
             }
         } else {
+            // a block of signals that do not have any data
             let (value, _) = read_variant_u32(&mut chain_bytes)?;
             let zeros = value >> 1;
-            push_zeros(&mut chain_table, zeros);
+            for _ in 0..zeros {
+                table.push(SignalDataLoc::None);
+            }
         }
     }
 
-    Ok((chain_table, chain_table_lengths, prev_idx))
+    // if there was a previous entry, we need to update the length
+    if let Some(prev_offset) = offset {
+        let len = NonZeroU32::new(last_table_entry - prev_offset.get()).unwrap();
+        table[prev_offset_idx] = SignalDataLoc::Offset(prev_offset, len);
+    }
+
+    Ok(table.into())
 }
 
 fn read_value_change_alias(
     mut chain_bytes: &[u8],
     max_handle: u64,
-) -> ReadResult<(Vec<u64>, Vec<u32>, usize)> {
-    let mut chain_table: Vec<u64> = Vec::with_capacity(max_handle as usize);
-    let mut chain_table_lengths: Vec<u32> = vec![0u32; (max_handle + 1) as usize];
-    let mut prev_idx = 0usize;
-    let mut value = 0u64;
+    last_table_entry: u32,
+) -> ReadResult<OffsetTable> {
+    let mut table = Vec::with_capacity(max_handle as usize);
+    let mut prev_offset_idx = 0usize;
+    let mut offset: Option<NonZeroU32> = None;
     while !chain_bytes.is_empty() {
         let (raw_val, _) = read_variant_u32(&mut chain_bytes)?;
-        let idx = chain_table.len();
+        let idx = table.len();
         if raw_val == 0 {
-            chain_table.push(0); // alias
-            let (len, _) = read_variant_u32(&mut chain_bytes)?;
-            chain_table_lengths[idx] = (-(len as i64)) as u32;
+            let (raw_alias, _) = read_variant_u32(&mut chain_bytes)?;
+            let alias = ((raw_alias as i64) - 1) as u32;
+            table.push(SignalDataLoc::Alias(alias));
         } else if (raw_val & 1) == 1 {
-            value += (raw_val as u64) >> 1;
-            if idx > 0 {
-                let len = (value - chain_table[prev_idx]) as u32;
-                chain_table_lengths[prev_idx] = len;
+            // a new incremental offset
+            let new_offset =
+                NonZeroU32::new(offset.map(|o| o.get()).unwrap_or_default() + (raw_val >> 1))
+                    .unwrap();
+            // if there was a previous entry, we need to update the length
+            if let Some(prev_offset) = offset {
+                let len = NonZeroU32::new(new_offset.get() - prev_offset.get()).unwrap();
+                table[prev_offset_idx] = SignalDataLoc::Offset(prev_offset, len);
             }
-            chain_table.push(value);
-            prev_idx = idx; // only take non-alias signals into account
+            offset = Some(new_offset);
+            prev_offset_idx = idx;
+            // push a placeholder which will be replaced as soon as we know the length
+            table.push(SignalDataLoc::None);
         } else {
+            // a block of signals that do not have any data
             let zeros = raw_val >> 1;
-            push_zeros(&mut chain_table, zeros);
-        }
-    }
-
-    Ok((chain_table, chain_table_lengths, prev_idx))
-}
-
-fn fixup_chain_table(chain_table: &mut [u64], chain_lengths: &mut [u32]) {
-    assert_eq!(chain_table.len(), chain_lengths.len());
-    for ii in 0..chain_table.len() {
-        let v32 = chain_lengths[ii] as i32;
-        if (v32 < 0) && (chain_table[ii] == 0) {
-            // two's complement
-            let v32_index = (-v32 - 1) as usize;
-            if v32_index < ii {
-                // "sanity check"
-                chain_table[ii] = chain_table[v32_index];
-                chain_lengths[ii] = chain_lengths[v32_index];
+            for _ in 0..zeros {
+                table.push(SignalDataLoc::None);
             }
         }
     }
+
+    // if there was a previous entry, we need to update the length
+    if let Some(prev_offset) = offset {
+        let len = NonZeroU32::new(last_table_entry - prev_offset.get()).unwrap();
+        table[prev_offset_idx] = SignalDataLoc::Offset(prev_offset, len);
+    }
+
+    Ok(table.into())
 }
 
-pub(crate) fn read_chain_table(
+/// Indicates the location of the signal data for the current block.
+#[derive(Debug, Copy, Clone)]
+enum SignalDataLoc {
+    /// The signal has no value changes in the current block.
+    None,
+    /// The signal has the same offset as another signal.
+    Alias(u32),
+    /// The signal has a new offset.
+    Offset(NonZeroU32, NonZeroU32),
+}
+
+pub(crate) fn read_signal_locs(
     input: &mut (impl Read + Seek),
     chain_len_offset: u64,
     section_kind: DataSectionKind,
     max_handle: u64,
     start: u64,
-) -> ReadResult<(Vec<u64>, Vec<u32>)> {
+) -> ReadResult<OffsetTable> {
     input.seek(SeekFrom::Start(chain_len_offset))?;
     let chain_compressed_length = read_u64(input)?;
 
@@ -1263,25 +1359,26 @@ pub(crate) fn read_chain_table(
     input.seek(SeekFrom::Start(chain_start))?;
     let chain_bytes = read_bytes(input, chain_compressed_length as usize)?;
 
-    let (mut chain_table, mut chain_table_lengths, prev_idx) =
-        if section_kind == DataSectionKind::DynamicAlias2 {
-            read_value_change_alias2(&chain_bytes, max_handle)?
-        } else {
-            read_value_change_alias(&chain_bytes, max_handle)?
-        };
-    let last_table_entry = chain_start - start; // indx_pos - vc_start
-    chain_table.push(last_table_entry);
-    chain_table_lengths[prev_idx] = (last_table_entry - chain_table[prev_idx]) as u32;
-
-    fixup_chain_table(&mut chain_table, &mut chain_table_lengths);
-
-    Ok((chain_table, chain_table_lengths))
+    let last_table_entry = (chain_start - start) as u32; // indx_pos - vc_start
+    if section_kind == DataSectionKind::DynamicAlias2 {
+        read_value_change_alias2(&chain_bytes, max_handle, last_table_entry)
+    } else {
+        read_value_change_alias(&chain_bytes, max_handle, last_table_entry)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn data_struct_sizes() {
+        assert_eq!(
+            std::mem::size_of::<SignalDataLoc>(),
+            std::mem::size_of::<u64>() + std::mem::size_of::<u32>()
+        );
+    }
 
     #[test]
     fn test_read_variant_i64() {

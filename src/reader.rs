@@ -253,6 +253,12 @@ enum UncompressGzipWrapper {
     InMemory(std::io::Cursor<Vec<u8>>),
 }
 
+#[cfg(target_arch = "wasm32")]
+const WE_HAVE_A_FILE_SYSTEM: bool = false;
+
+#[cfg(not(target_arch = "wasm32"))]
+const WE_HAVE_A_FILE_SYSTEM: bool = true;
+
 /// Checks to see if the whole file is compressed in which case it is decompressed
 /// to a temp file which is returned.
 fn uncompress_gzip_wrapper(input: &mut (impl Read + Seek)) -> Result<UncompressGzipWrapper> {
@@ -270,19 +276,20 @@ fn uncompress_gzip_wrapper(input: &mut (impl Read + Seek)) -> Result<UncompressG
         }
 
         // try to use a tempfile
-        if let Ok(mut target) = tempfile::tempfile() {
-            decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
-            // go to start of new file and return
-            target.seek(SeekFrom::Start(0))?;
-            let new_input = std::io::BufReader::new(target);
-            Ok(UncompressGzipWrapper::TempFile(new_input))
-        } else {
-            // otherwise decompress into memory
-            let mut target = vec![];
-            decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
-            let new_input = std::io::Cursor::new(target);
-            Ok(UncompressGzipWrapper::InMemory(new_input))
+        if WE_HAVE_A_FILE_SYSTEM {
+            if let Ok(mut target) = tempfile::tempfile() {
+                decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
+                // go to start of new file and return
+                target.seek(SeekFrom::Start(0))?;
+                let new_input = std::io::BufReader::new(target);
+                return Ok(UncompressGzipWrapper::TempFile(new_input));
+            }
         }
+        // otherwise decompress into memory
+        let mut target = vec![];
+        decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
+        let new_input = std::io::Cursor::new(target);
+        Ok(UncompressGzipWrapper::InMemory(new_input))
     }
 }
 

@@ -463,7 +463,7 @@ struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalVa
     callback: &'a mut F,
 }
 
-impl<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'a, R, F> {
+impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'_, R, F> {
     fn read_value_changes(
         &mut self,
         section_kind: DataSectionKind,

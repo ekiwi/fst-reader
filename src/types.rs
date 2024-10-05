@@ -26,6 +26,8 @@ impl FstSignalHandle {
     pub fn get_index(&self) -> usize {
         (self.0.get() - 1) as usize
     }
+
+    #[cfg(test)]
     pub(crate) fn get_raw(&self) -> u32 {
         self.0.get()
     }
@@ -250,6 +252,7 @@ impl SignalInfo {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn to_file_format(&self) -> u32 {
         match self {
             SignalInfo::BitVec(value) => match value.get() {

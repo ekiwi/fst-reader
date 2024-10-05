@@ -7,7 +7,9 @@ use crate::types::*;
 use crate::FstSignalValue;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::cmp::Ordering;
-use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(test)]
+use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU32;
 use thiserror::Error;
 
@@ -53,6 +55,7 @@ pub enum ReaderError {
 
 pub type ReadResult<T> = Result<T, ReaderError>;
 
+#[cfg(test)]
 pub type WriteResult<T> = Result<T, ReaderError>;
 
 //////////////// Primitives
@@ -76,20 +79,20 @@ pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> 
 #[inline]
 pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
     let mut byte = [0u8; 1];
-    let mut res = 0i64;
+    let mut res = 0u64;
     // 64bit / 7bit = ~9.1
     for ii in 0..10 {
         input.read_exact(&mut byte)?;
-        let value = (byte[0] & 0x7f) as i64;
+        let value = (byte[0] & 0x7f) as u64;
         let shift_by = 7 * ii;
         res |= value << shift_by;
         if (byte[0] & 0x80) == 0 {
             // sign extend
             let sign_bit_set = (byte[0] & 0x40) != 0;
-            if shift_by < (8 * 8) && sign_bit_set {
-                res |= -(1i64 << (shift_by + 7))
+            if (shift_by + 7) < u64::BITS && sign_bit_set {
+                res |= u64::MAX << (shift_by + 7);
             }
-            return Ok(res);
+            return Ok(res as i64);
         }
     }
     Err(ReaderError::Leb128(64))
@@ -111,6 +114,7 @@ pub(crate) fn read_variant_u64(input: &mut impl Read) -> ReadResult<(u64, usize)
     Err(ReaderError::Leb128(64))
 }
 
+#[cfg(test)]
 #[inline]
 pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> WriteResult<usize> {
     // often, the value is small
@@ -132,6 +136,35 @@ pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Writ
     Ok(bytes.len())
 }
 
+#[cfg(test)]
+#[inline]
+pub(crate) fn write_variant_i64(output: &mut impl Write, mut value: i64) -> WriteResult<usize> {
+    // often, the value is small
+    if value <= 63 && value >= -64 {
+        let byte = [value as u8 & 0x7f; 1];
+        output.write_all(&byte)?;
+        return Ok(1);
+    }
+
+    // calculate the number of bits we need to represent
+    let bits = if value >= 0 {
+        64 - value.leading_zeros() + 1
+    } else {
+        64 - value.leading_ones() + 1
+    };
+    let num_bytes = bits.div_ceil(7) as usize;
+
+    let mut bytes = Vec::with_capacity(num_bytes);
+    for ii in 0..num_bytes {
+        let mark = if ii == num_bytes - 1 { 0 } else { 0x80 };
+        bytes.push((value & 0x7f) as u8 | mark);
+        value >>= 7;
+    }
+    output.write_all(&bytes)?;
+    Ok(bytes.len())
+}
+
+#[cfg(test)]
 #[inline]
 pub(crate) fn write_variant_u32(output: &mut impl Write, value: u32) -> WriteResult<usize> {
     write_variant_u64(output, value as u64)
@@ -144,6 +177,7 @@ pub(crate) fn read_u64(input: &mut impl Read) -> ReadResult<u64> {
     Ok(u64::from_be_bytes(buf))
 }
 
+#[cfg(test)]
 #[inline]
 pub(crate) fn write_u64(output: &mut impl Write, value: u64) -> WriteResult<()> {
     let buf = value.to_be_bytes();
@@ -158,6 +192,7 @@ pub(crate) fn read_u8(input: &mut impl Read) -> ReadResult<u8> {
     Ok(buf[0])
 }
 
+#[cfg(test)]
 fn write_u8(output: &mut impl Write, value: u8) -> WriteResult<()> {
     let buf = value.to_be_bytes();
     output.write_all(&buf)?;
@@ -171,6 +206,7 @@ pub(crate) fn read_i8(input: &mut impl Read) -> ReadResult<i8> {
     Ok(i8::from_be_bytes(buf))
 }
 
+#[cfg(test)]
 #[inline]
 fn write_i8(output: &mut impl Write, value: i8) -> WriteResult<()> {
     let buf = value.to_be_bytes();
@@ -194,6 +230,7 @@ pub(crate) fn read_c_str(input: &mut impl Read, max_len: usize) -> ReadResult<St
     ))
 }
 
+#[cfg(test)]
 fn write_c_str(output: &mut impl Write, value: &str) -> WriteResult<()> {
     let bytes = value.as_bytes();
     output.write_all(bytes)?;
@@ -210,6 +247,8 @@ pub(crate) fn read_c_str_fixed_length(input: &mut impl Read, len: usize) -> Read
     Ok(String::from_utf8(bytes)?)
 }
 
+#[cfg(test)]
+#[cfg(test)]
 #[inline]
 fn write_c_str_fixed_length(
     output: &mut impl Write,
@@ -289,6 +328,7 @@ pub(crate) fn read_zlib_compressed_bytes(
 
 /// ZLib compresses bytes. If allow_uncompressed is true, we overwrite the compressed with the
 /// uncompressed bytes if it turns out that the compressed bytes are longer.
+#[cfg(test)]
 pub(crate) fn write_compressed_bytes(
     output: &mut (impl Write + Seek),
     bytes: &[u8],
@@ -352,6 +392,7 @@ pub(crate) fn read_f64(input: &mut impl Read, endian: FloatingPointEndian) -> Re
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn write_f64(output: &mut impl Write, value: f64) -> WriteResult<()> {
     // for f64, we have the option to use either LE or BE, we just need to be consistent
@@ -410,7 +451,7 @@ pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<(Header, Floating
     Ok((header, float_endian))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_header(output: &mut impl Write, header: &Header) -> WriteResult<()> {
     write_u64(output, HEADER_LENGTH)?;
     write_u64(output, header.start_time)?;
@@ -449,7 +490,7 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
     Ok(signals)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_geometry(
     output: &mut (impl Write + Seek),
     signals: &Vec<SignalInfo>,
@@ -506,7 +547,7 @@ pub(crate) fn read_blackout(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Bl
     Ok(blackouts)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_blackout(
     output: &mut (impl Write + Seek),
     blackouts: &[BlackoutData],
@@ -537,7 +578,7 @@ pub(crate) fn write_blackout(
 }
 
 //////////////// Hierarchy
-
+#[cfg(test)]
 const HIERARCHY_GZIP_COMPRESSION_LEVEL: flate2::Compression = flate2::Compression::best();
 
 pub(crate) fn read_hierarchy_bytes(
@@ -575,7 +616,7 @@ pub(crate) fn read_hierarchy_bytes(
     Ok(bytes)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_hierarchy_bytes(
     output: &mut (impl Write + Seek),
     compression: HierarchyCompression,
@@ -651,6 +692,7 @@ fn enum_table_from_string(value: String, handle: u64) -> ReadResult<FstHierarchy
     })
 }
 
+#[cfg(test)]
 fn enum_table_to_string(name: &str, mapping: &[(String, String)]) -> String {
     let mut out = String::with_capacity(name.len() + mapping.len() * 32 + 32);
     out.push_str(name);
@@ -811,6 +853,7 @@ pub(crate) fn read_hierarchy_entry(
     Ok(Some(entry))
 }
 
+#[cfg(test)]
 fn write_hierarchy_attribute(
     output: &mut impl Write,
     tpe: AttributeType,
@@ -842,7 +885,7 @@ fn write_hierarchy_attribute(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_hierarchy_entry(
     output: &mut impl Write,
     handle_count: &mut u32,
@@ -1044,7 +1087,7 @@ pub(crate) fn read_time_chain(
     Ok((time_section_length, time_table))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn write_time_chain(
     output: &mut (impl Write + Seek),
     compression: Option<flate2::Compression>,
@@ -1081,6 +1124,7 @@ pub(crate) fn write_time_chain(
     Ok(())
 }
 
+#[cfg(test)]
 #[inline]
 fn write_time_chain_data(output: &mut impl Write, table: &[u64]) -> WriteResult<usize> {
     let mut total_len = 0;
@@ -1390,6 +1434,20 @@ mod tests {
         assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
     }
 
+    #[test]
+    fn regression_test_read_write_variant_i64() {
+        do_test_read_write_variant_i64(-36028797018963969);
+        do_test_read_write_variant_i64(-4611686018427387905);
+    }
+
+    fn do_test_read_write_variant_i64(value: i64) {
+        let mut buf = std::io::Cursor::new(vec![0u8; 24]);
+        write_variant_i64(&mut buf, value).unwrap();
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        let read_value = read_variant_i64(&mut buf).unwrap();
+        assert_eq!(read_value, value);
+    }
+
     proptest! {
          #[test]
         fn test_read_write_variant_u64(value: u64) {
@@ -1398,6 +1456,11 @@ mod tests {
             buf.seek(SeekFrom::Start(0)).unwrap();
             let (read_value, _) = read_variant_u64(&mut buf).unwrap();
             assert_eq!(read_value, value);
+        }
+
+         #[test]
+        fn test_read_write_variant_i64(value: i64) {
+            do_test_read_write_variant_i64(value);
         }
     }
 

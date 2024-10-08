@@ -1212,6 +1212,10 @@ impl OffsetTable {
         }
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     fn get_entry(&self, signal_idx: usize) -> Option<OffsetEntry> {
         match &self.0[signal_idx] {
             SignalDataLoc::None => None,

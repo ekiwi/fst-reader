@@ -1,5 +1,5 @@
 [package]
-name = "fst-native"
+name = "fst-reader"
 version = "0.8.4"
 edition = "2021"
 authors = ["Kevin Laeufer <laeufer@berkeley.edu>"]

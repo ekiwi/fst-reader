@@ -1,12 +1,12 @@
 [package]
 name = "fst-reader"
-version = "0.8.5"
+version = "0.8.6"
 edition = "2021"
 authors = ["Kevin Laeufer <laeufer@berkeley.edu>"]
 description = "FST wavedump format reader implemented in safe Rust. Formerly known as fst-native."
 homepage = "https://github.com/ekiwi/fst-reader"
 license = "BSD-3-Clause"
-include = ["Cargo.toml", "LICENSE", "src/", "tests/"]
+include = ["Cargo.toml", "LICENSE", "src/", "tests/", "examples/"]
 keywords = ["fst", "waveform", "wavedump"]
 
 [dependencies]

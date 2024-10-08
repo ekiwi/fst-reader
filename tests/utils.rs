@@ -2,7 +2,7 @@
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
-use fst_native::*;
+use fst_reader::*;
 
 pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
     match entry {

@@ -5,7 +5,7 @@
 // It is easiest to write a Diff test. However, on some inputs GTKWave actually crashes
 // and thus we cannot compare.
 
-use fst_native::*;
+use fst_reader::*;
 use std::io::{BufRead, Seek};
 use std::path::{Path, PathBuf};
 
@@ -88,8 +88,7 @@ fn test_is_fst_file() {
         let mut f = std::fs::File::open(filename.clone())
             .unwrap_or_else(|_| panic!("Failed to open {:?}", filename));
         let is_fst = is_fst_file(&mut f);
-        // this one file seems corrupted
-        let should_be_fst = !filename.to_str().unwrap().ends_with("libsigrok.vcd.fst");
+        let should_be_fst = true;
         assert_eq!(
             is_fst, should_be_fst,
             "{filename:?} should be detected as a FST! ({should_be_fst})"

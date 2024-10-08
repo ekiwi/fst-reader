@@ -6,7 +6,7 @@ authors = ["Kevin Laeufer <laeufer@berkeley.edu>"]
 description = "FST wavedump format reader implemented in safe Rust."
 homepage = "https://github.com/ekiwi/fst-native"
 license = "BSD-3-Clause"
-include = ["Cargo.toml", "LICENSE", "src/"]
+include = ["Cargo.toml", "LICENSE", "src/", "tests/"]
 keywords = ["fst", "waveform", "wavedump"]
 
 [dependencies]

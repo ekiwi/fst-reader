@@ -1212,6 +1212,7 @@ impl OffsetTable {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }

@@ -2,7 +2,7 @@
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@berkeley.edu>
 
-use fst_native::*;
+use fst_reader::*;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
 use std::fs::File;

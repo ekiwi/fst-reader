@@ -344,6 +344,11 @@ fn diff_amaranth_up_counter() {
 }
 
 #[test]
+fn diff_fst_writer_simple() {
+    run_diff_test("fsts/fst-writer/simple.fst", &FstFilter::all());
+}
+
+#[test]
 fn diff_ghdl_alu() {
     run_diff_test("fsts/ghdl/alu.vcd.fst", &FstFilter::all());
 }

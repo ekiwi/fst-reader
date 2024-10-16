@@ -355,6 +355,8 @@ impl<R: Read + Seek> HeaderReader<R> {
         let section_length = read_u64(&mut self.input)?;
         let start_time = read_u64(&mut self.input)?;
         let end_time = read_u64(&mut self.input)?;
+        let mem_required_for_traversal = read_u64(&mut self.input)?;
+
         // optional: read the time table
         if let Some(table) = &mut self.time_table {
             let (_, mut time_chain) =
@@ -368,13 +370,14 @@ impl<R: Read + Seek> HeaderReader<R> {
             self.input.seek(SeekFrom::Start(file_offset + 3 * 8))?;
         }
         // go to the end of the section
-        self.skip(section_length, 3 * 8)?;
+        self.skip(section_length, 4 * 8)?;
         let kind = DataSectionKind::from_block_type(tpe).unwrap();
         let info = DataSectionInfo {
             file_offset,
             start_time,
             end_time,
             kind,
+            mem_required_for_traversal,
         };
         self.data_sections.push(info);
         Ok(())

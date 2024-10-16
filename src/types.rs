@@ -293,6 +293,9 @@ pub(crate) struct DataSectionInfo {
     pub(crate) start_time: u64,
     pub(crate) end_time: u64,
     pub(crate) kind: DataSectionKind,
+    /// the number of bytes needed to store all uncompressed value change data in the block
+    #[allow(dead_code)]
+    pub(crate) mem_required_for_traversal: u64,
 }
 
 #[derive(Debug, PartialEq)]

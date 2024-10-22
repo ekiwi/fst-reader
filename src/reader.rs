@@ -367,7 +367,7 @@ impl<R: Read + Seek> HeaderReader<R> {
                 table.push(start_time);
             }
             table.append(&mut time_chain);
-            self.input.seek(SeekFrom::Start(file_offset + 3 * 8))?;
+            self.input.seek(SeekFrom::Start(file_offset + 4 * 8))?;
         }
         // go to the end of the section
         self.skip(section_length, 4 * 8)?;

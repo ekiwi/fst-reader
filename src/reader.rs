@@ -333,7 +333,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         // optional: read the time table
         if let Some(table) = &mut self.time_table {
             let (_, mut time_chain) =
-                read_time_chain(&mut self.input, file_offset, section_length)?;
+                read_time_table(&mut self.input, file_offset, section_length)?;
             // in the first section, we might need to include the start time
             let is_first_section = table.is_empty();
             if is_first_section && time_chain[0] > start_time {
@@ -451,7 +451,6 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
         let (max_handle, _) = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
         let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
-
         // the chain length is right in front of the time section
         let chain_len_offset = section_start + section_length - time_section_length - 8;
         let signal_offsets = read_signal_locs(
@@ -594,15 +593,13 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
             assert_eq!(end_time, section.end_time);
             let is_first_section = sec_num == 0;
 
-            // 66 is for the potential fastlz overhead
-            // let mem_required_for_traversal = read_u64(&mut self.input)? + 66;
-
-            let (time_section_length, time_chain) =
-                read_time_chain(&mut self.input, section.file_offset, section_length)?;
+            // read the time table
+            let (time_section_length, time_table) =
+                read_time_table(&mut self.input, section.file_offset, section_length)?;
 
             // only read frame if this is the first section and there is no other data for
             // the start time
-            if is_first_section && time_chain[0] > start_time {
+            if is_first_section && time_table[0] > start_time {
                 read_frame(
                     &mut self.input,
                     section.file_offset,
@@ -622,7 +619,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
                 section.file_offset,
                 section_length,
                 time_section_length,
-                &time_chain,
+                &time_table,
             )?;
         }
 

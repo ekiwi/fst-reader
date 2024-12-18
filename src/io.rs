@@ -312,7 +312,15 @@ pub(crate) fn read_zlib_compressed_bytes(
     let bytes = if uncompressed_length == compressed_length && allow_uncompressed {
         read_bytes(input, compressed_length as usize)?
     } else {
-        let start = input.stream_position().unwrap();
+        let start = input.stream_position()?;
+
+        // read first byte to check which compression is used.
+        let first_byte = read_u8(input)?;
+        input.seek(SeekFrom::Start(start))?;
+        // for zlib compression, the first byte should be 0x78
+        let is_zlib = first_byte == 0x78;
+        debug_assert!(is_zlib, "expected a zlib compressed block!");
+
         let mut d = flate2::read::ZlibDecoder::new(input);
         let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
         d.read_to_end(&mut uncompressed)?;
@@ -1059,7 +1067,7 @@ pub(crate) fn read_packed_signal_value_bytes(
     }
 }
 
-pub(crate) fn read_time_chain(
+pub(crate) fn read_time_table(
     input: &mut (impl Read + Seek),
     section_start: u64,
     section_length: u64,
@@ -1245,6 +1253,7 @@ pub(crate) struct OffsetTableIter<'a> {
     signal_idx: usize,
 }
 
+#[derive(Debug)]
 pub(crate) struct OffsetEntry {
     pub(crate) signal_idx: usize,
     pub(crate) offset: u64,
@@ -1731,7 +1740,7 @@ mod tests {
         let section_length = buf.stream_position().unwrap();
         buf.seek(SeekFrom::Start(0)).unwrap();
         let (actual_len, actual_table) =
-            read_time_chain(&mut buf, section_start, section_length).unwrap();
+            read_time_table(&mut buf, section_start, section_length).unwrap();
         assert_eq!(actual_len, section_length);
         assert_eq!(actual_table, table);
     }

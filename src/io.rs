@@ -26,6 +26,8 @@ pub enum ReaderError {
     ParseInt(#[from] std::num::ParseIntError),
     #[error("failed to decompress with lz4")]
     Lz4Decompress(#[from] lz4_flex::block::DecompressError),
+    #[error("failed to decompress with zlib")]
+    ZLibDecompress(#[from] miniz_oxide::inflate::DecompressError),
     #[error("failed to decode string")]
     Utf8(#[from] std::str::Utf8Error),
     #[error("failed to decode string")]
@@ -321,14 +323,11 @@ pub(crate) fn read_zlib_compressed_bytes(
         let is_zlib = first_byte == 0x78;
         debug_assert!(is_zlib, "expected a zlib compressed block!");
 
-        let mut d = flate2::read::ZlibDecoder::new(input);
-        let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length as usize);
-        d.read_to_end(&mut uncompressed)?;
-        // sanity checks
-        assert_eq!(d.total_out(), uncompressed_length);
-        // the decoder often reads more bytes than it should, we fix this here
-        d.into_inner()
-            .seek(SeekFrom::Start(start + compressed_length))?;
+        let compressed = read_bytes(input, compressed_length as usize)?;
+        let uncompressed = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
+            compressed.as_slice(),
+            uncompressed_length as usize,
+        )?;
         uncompressed
     };
     assert_eq!(bytes.len(), uncompressed_length as usize);
@@ -341,22 +340,16 @@ pub(crate) fn read_zlib_compressed_bytes(
 pub(crate) fn write_compressed_bytes(
     output: &mut (impl Write + Seek),
     bytes: &[u8],
-    compression_level: flate2::Compression,
+    compression_level: u8,
     allow_uncompressed: bool,
 ) -> WriteResult<usize> {
-    let start = output.stream_position()?;
-    let mut d = flate2::write::ZlibEncoder::new(output, compression_level);
-    d.write_all(bytes)?;
-    d.flush()?;
-    assert_eq!(d.total_in() as usize, bytes.len());
-    let compressed_written = d.total_out() as usize;
-    let output2 = d.finish()?;
-    if !allow_uncompressed || compressed_written < bytes.len() {
-        Ok(compressed_written)
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(bytes, compression_level);
+    if !allow_uncompressed || compressed.len() < bytes.len() {
+        output.write_all(compressed.as_slice())?;
+        Ok(compressed.len())
     } else {
         // it turns out that the compression was futile!
-        output2.seek(SeekFrom::Start(start))?;
-        output2.write_all(bytes)?;
+        output.write_all(bytes)?;
         Ok(bytes.len())
     }
 }
@@ -503,7 +496,7 @@ pub(crate) fn read_geometry(input: &mut (impl Read + Seek)) -> ReadResult<Vec<Si
 pub(crate) fn write_geometry(
     output: &mut (impl Write + Seek),
     signals: &Vec<SignalInfo>,
-    compression: flate2::Compression,
+    compression: u8,
 ) -> WriteResult<()> {
     // remember start to fix the section length afterwards
     let start = output.stream_position()?;
@@ -1097,53 +1090,51 @@ pub(crate) fn read_time_table(
 }
 
 #[cfg(test)]
-pub(crate) fn write_time_chain(
+pub(crate) fn write_time_table(
     output: &mut (impl Write + Seek),
-    compression: Option<flate2::Compression>,
+    compression: Option<u8>,
     table: &[u64],
 ) -> WriteResult<()> {
+    // delta compress
+    let num_entries = table.len();
+    let table = delta_compress_time_table(table)?;
     // write data
-    let (uncompressed_len, compressed_len, out2) = match compression {
+    let (uncompressed_len, compressed_len) = match compression {
         Some(comp) => {
-            let start = output.stream_position()?;
-            let mut e = flate2::write::ZlibEncoder::new(output, comp);
-            let uncompressed_len = write_time_chain_data(&mut e, table)? as u64;
-            let out2 = e.finish()?;
-            let end = out2.stream_position()?;
-            let compressed_len = end - start;
-
-            // important: if the compression does not work, we need to save the data uncompressed
-            if compressed_len >= uncompressed_len {
-                out2.seek(SeekFrom::Start(start))?; // go back to start
-                let len = write_time_chain_data(out2, table)? as u64;
-                (len, len, out2)
+            let compressed = miniz_oxide::deflate::compress_to_vec_zlib(table.as_slice(), comp);
+            // is compression worth it?
+            if compressed.len() < table.len() {
+                output.write_all(compressed.as_slice())?;
+                (table.len(), compressed.len())
             } else {
-                (uncompressed_len, compressed_len, out2)
+                // it is more space efficient to stick with the uncompressed version
+                output.write_all(table.as_slice())?;
+                (table.len(), table.len())
             }
         }
         None => {
-            let len = write_time_chain_data(output, table)? as u64;
-            (len, len, output)
+            output.write_all(table.as_slice())?;
+            (table.len(), table.len())
         }
     };
-    write_u64(out2, uncompressed_len)?;
-    write_u64(out2, compressed_len)?;
-    write_u64(out2, table.len() as u64)?;
+    write_u64(output, uncompressed_len as u64)?;
+    write_u64(output, compressed_len as u64)?;
+    write_u64(output, num_entries as u64)?;
 
     Ok(())
 }
 
 #[cfg(test)]
 #[inline]
-fn write_time_chain_data(output: &mut impl Write, table: &[u64]) -> WriteResult<usize> {
-    let mut total_len = 0;
+fn delta_compress_time_table(table: &[u64]) -> WriteResult<Vec<u8>> {
+    let mut output = vec![];
     let mut prev_time = 0u64;
     for time in table {
         let delta = *time - prev_time;
         prev_time = *time;
-        total_len += write_variant_u64(output, delta)?;
+        write_variant_u64(&mut output, delta)?;
     }
-    Ok(total_len)
+    Ok(output)
 }
 #[allow(clippy::too_many_arguments)]
 #[inline]
@@ -1553,7 +1544,7 @@ mod tests {
         #[test]
         fn test_compress_bytes(bytes: Vec<u8>, allow_uncompressed: bool) {
             let mut buf = std::io::Cursor::new(vec![0u8; bytes.len() * 2]);
-            let compressed_len = write_compressed_bytes(&mut buf, &bytes, flate2::Compression::new(9), allow_uncompressed).unwrap();
+            let compressed_len = write_compressed_bytes(&mut buf, &bytes, 3, allow_uncompressed).unwrap();
             if allow_uncompressed {
                 assert!(compressed_len <= bytes.len());
             }
@@ -1585,8 +1576,7 @@ mod tests {
         fn test_read_write_geometry(signals: Vec<SignalInfo>) {
             let max_len = signals.len() * 4 + 3 * 8;
             let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
-            let comp = flate2::Compression::best();
-            write_geometry(&mut buf, &signals, comp).unwrap();
+            write_geometry(&mut buf, &signals, 3).unwrap();
             buf.seek(SeekFrom::Start(0)).unwrap();
             let actual = read_geometry(&mut buf).unwrap();
             assert_eq!(actual.len(), signals.len());
@@ -1730,12 +1720,8 @@ mod tests {
         table.sort();
         let max_len = std::cmp::max(64, table.len() * 8 + 3 * 8);
         let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
-        let comp = if compressed {
-            Some(flate2::Compression::best())
-        } else {
-            None
-        };
-        write_time_chain(&mut buf, comp, &table).unwrap();
+        let comp = if compressed { Some(3) } else { None };
+        write_time_table(&mut buf, comp, &table).unwrap();
         let section_start = 0u64;
         let section_length = buf.stream_position().unwrap();
         buf.seek(SeekFrom::Start(0)).unwrap();
@@ -1749,6 +1735,12 @@ mod tests {
     fn test_read_write_time_table_uncompressed() {
         let table = vec![1, 0];
         read_write_time_table(table, false);
+    }
+
+    #[test]
+    fn test_read_write_time_table_compressed() {
+        let table = (0..10000).collect();
+        read_write_time_table(table, true);
     }
 
     proptest! {

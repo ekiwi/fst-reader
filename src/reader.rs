@@ -1,10 +1,11 @@
 // Copyright 2023 The Regents of the University of California
+// Copyright 2024 Cornell University
 // released under BSD 3-Clause License
-// author: Kevin Laeufer <laeufer@berkeley.edu>
+// author: Kevin Laeufer <laeufer@cornell.edu>
 
 use crate::io::*;
 use crate::types::*;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
 pub struct FstReader<R: BufRead + Seek> {
@@ -14,7 +15,7 @@ pub struct FstReader<R: BufRead + Seek> {
 
 enum InputVariant<R: BufRead + Seek> {
     Original(R),
-    Uncompressed(BufReader<std::fs::File>),
+    // Uncompressed(BufReader<std::fs::File>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
 }
 
@@ -98,15 +99,6 @@ impl<R: BufRead + Seek> FstReader<R> {
                     meta,
                 })
             }
-            UncompressGzipWrapper::TempFile(uc) => {
-                let mut header_reader = HeaderReader::new(uc);
-                header_reader.read(read_time_table)?;
-                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
-                Ok(FstReader {
-                    input: InputVariant::Uncompressed(uc2),
-                    meta,
-                })
-            }
             UncompressGzipWrapper::InMemory(uc) => {
                 let mut header_reader = HeaderReader::new(uc);
                 header_reader.read(read_time_table)?;
@@ -142,7 +134,6 @@ impl<R: BufRead + Seek> FstReader<R> {
     pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
         match &mut self.input {
             InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
-            InputVariant::Uncompressed(input) => read_hierarchy(input, &self.meta, callback),
             InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
         }
     }
@@ -175,9 +166,6 @@ impl<R: BufRead + Seek> FstReader<R> {
         // build and run reader
         match &mut self.input {
             InputVariant::Original(input) => {
-                read_signals(input, &self.meta, &data_filter, callback)
-            }
-            InputVariant::Uncompressed(input) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
             InputVariant::UncompressedInMem(input) => {
@@ -249,15 +237,9 @@ fn read_signals(
 
 enum UncompressGzipWrapper {
     None,
-    TempFile(BufReader<std::fs::File>),
+    // TempFile(BufReader<std::fs::File>),
     InMemory(std::io::Cursor<Vec<u8>>),
 }
-
-#[cfg(target_arch = "wasm32")]
-const WE_HAVE_A_FILE_SYSTEM: bool = false;
-
-#[cfg(not(target_arch = "wasm32"))]
-const WE_HAVE_A_FILE_SYSTEM: bool = true;
 
 /// Checks to see if the whole file is compressed in which case it is decompressed
 /// to a temp file which is returned.
@@ -275,17 +257,8 @@ fn uncompress_gzip_wrapper(input: &mut (impl Read + Seek)) -> Result<UncompressG
             return Err(ReaderError::NotFinishedCompressing());
         }
 
-        // try to use a tempfile
-        if WE_HAVE_A_FILE_SYSTEM {
-            if let Ok(mut target) = tempfile::tempfile() {
-                decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
-                // go to start of new file and return
-                target.seek(SeekFrom::Start(0))?;
-                let new_input = std::io::BufReader::new(target);
-                return Ok(UncompressGzipWrapper::TempFile(new_input));
-            }
-        }
-        // otherwise decompress into memory
+        // TODO: add back the ability to uncompress to a temporary file without adding a dependency
+        // we always decompress into memory
         let mut target = vec![];
         decompress_gz_in_chunks(input, uncompress_length, &mut target)?;
         let new_input = std::io::Cursor::new(target);

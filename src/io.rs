@@ -581,7 +581,26 @@ pub(crate) fn write_blackout(
 
 //////////////// Hierarchy
 #[cfg(test)]
-const HIERARCHY_GZIP_COMPRESSION_LEVEL: flate2::Compression = flate2::Compression::best();
+const HIERARCHY_GZIP_COMPRESSION_LEVEL: u8 = 4;
+
+/// uncompresses zlib compressed bytes with a gzip header
+pub(crate) fn read_gzip_compressed_bytes(
+    input: &mut (impl Read + Seek),
+    uncompressed_len: usize,
+    compressed_len: usize,
+) -> ReadResult<Vec<u8>> {
+    let header = read_bytes(input, 10)?;
+    let correct_magic = header[0] == 0x1f && header[1] == 0x8f;
+    let is_deflate_compressed = header[2] == 8;
+    let flag = header[3];
+    // TODO: report errors
+    // we do not care about other header bytes
+    let data = read_bytes(input, compressed_len - 10)?;
+    let uncompressed =
+        miniz_oxide::inflate::decompress_to_vec_with_limit(data.as_slice(), uncompressed_len)?;
+    debug_assert_eq!(uncompressed.len(), uncompressed_len);
+    Ok(uncompressed)
+}
 
 pub(crate) fn read_hierarchy_bytes(
     input: &mut (impl Read + Seek),
@@ -593,14 +612,7 @@ pub(crate) fn read_hierarchy_bytes(
 
     let bytes = match compression {
         HierarchyCompression::ZLib => {
-            let start = input.stream_position().unwrap();
-            let mut d = flate2::read::GzDecoder::new(input);
-            let mut uncompressed: Vec<u8> = Vec::with_capacity(uncompressed_length);
-            d.read_to_end(&mut uncompressed)?;
-            // the decoder often reads more bytes than it should, we fix this here
-            d.into_inner()
-                .seek(SeekFrom::Start(start + compressed_length as u64))?;
-            uncompressed
+            read_gzip_compressed_bytes(input, uncompressed_length, compressed_length)?
         }
         HierarchyCompression::Lz4 => {
             read_lz4_compressed_bytes(input, uncompressed_length, compressed_length)?
@@ -619,6 +631,29 @@ pub(crate) fn read_hierarchy_bytes(
 }
 
 #[cfg(test)]
+const GZIP_HEADER: [u8; 10] = [
+    0x1f, 0x8f, // magic bytes
+    8,    // using deflate
+    0,    // no flags
+    0, 0, 0, 0,   // timestamp = 0
+    0,   // compression level (does not really matter)
+    255, // OS set to 255 by default
+];
+
+/// writes zlib compressed bytes with a gzip header
+#[cfg(test)]
+pub(crate) fn write_gzip_compressed_bytes(
+    output: &mut impl Write,
+    bytes: &[u8],
+    compression_level: u8,
+) -> ReadResult<()> {
+    output.write_all(GZIP_HEADER.as_slice())?;
+    let compressed = miniz_oxide::deflate::compress_to_vec(bytes, compression_level);
+    output.write_all(compressed.as_slice())?;
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn write_hierarchy_bytes(
     output: &mut (impl Write + Seek),
     compression: HierarchyCompression,
@@ -630,16 +665,13 @@ pub(crate) fn write_hierarchy_bytes(
     let uncompressed_length = bytes.len() as u64;
     write_u64(output, uncompressed_length)?;
 
-    let out2 = match compression {
+    match compression {
         HierarchyCompression::ZLib => {
-            let mut e = flate2::write::GzEncoder::new(output, HIERARCHY_GZIP_COMPRESSION_LEVEL);
-            e.write_all(bytes)?;
-            e.finish()?
+            write_gzip_compressed_bytes(output, bytes, HIERARCHY_GZIP_COMPRESSION_LEVEL)?;
         }
         HierarchyCompression::Lz4 => {
             let compressed = lz4_flex::compress(bytes);
             output.write_all(&compressed)?;
-            output
         }
         HierarchyCompression::Lz4Duo => {
             let compressed_lvl1 = lz4_flex::compress(bytes);
@@ -647,15 +679,14 @@ pub(crate) fn write_hierarchy_bytes(
             write_variant_u64(output, lvl1_len)?;
             let compressed_lvl2 = lz4_flex::compress(&compressed_lvl1);
             output.write_all(&compressed_lvl2)?;
-            output
         }
     };
 
     // fix section length
-    let end = out2.stream_position()?;
-    out2.seek(SeekFrom::Start(start))?;
-    write_u64(out2, end - start)?;
-    out2.seek(SeekFrom::Start(end))?;
+    let end = output.stream_position()?;
+    output.seek(SeekFrom::Start(start))?;
+    write_u64(output, end - start)?;
+    output.seek(SeekFrom::Start(end))?;
     Ok(())
 }
 
@@ -1703,15 +1734,25 @@ mod tests {
         read_write_hierarchy_entry(entry);
     }
 
+    fn do_test_read_write_hierarchy_bytes(tpe: HierarchyCompression, bytes: Vec<u8>) {
+        let max_len = std::cmp::max(64, bytes.len() + 3 * 8);
+        let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
+        write_hierarchy_bytes(&mut buf, tpe, &bytes).unwrap();
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        let actual = read_hierarchy_bytes(&mut buf, tpe).unwrap();
+        assert_eq!(actual, bytes);
+    }
+
+    #[test]
+    fn test_read_write_hierarchy_bytes_regression() {
+        do_test_read_write_hierarchy_bytes(HierarchyCompression::Lz4, vec![]);
+        do_test_read_write_hierarchy_bytes(HierarchyCompression::ZLib, vec![]);
+    }
+
     proptest! {
         #[test]
         fn test_prop_read_write_hierarchy_bytes(tpe: HierarchyCompression, bytes: Vec<u8>) {
-            let max_len = std::cmp::max(64, bytes.len() + 3 * 8);
-            let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
-            write_hierarchy_bytes(&mut buf, tpe, &bytes).unwrap();
-            buf.seek(SeekFrom::Start(0)).unwrap();
-            let actual = read_hierarchy_bytes(&mut buf, tpe).unwrap();
-            assert_eq!(actual, bytes);
+            do_test_read_write_hierarchy_bytes(tpe, bytes);
         }
     }
 

@@ -271,13 +271,41 @@ fn decompress_gz_in_chunks(
     mut remaining: usize,
     target: &mut impl Write,
 ) -> Result<()> {
-    let mut decoder = flate2::read::GzDecoder::new(input);
-    let mut buf = vec![0u8; 32768]; // FST_GZIO_LEN
+    read_gzip_header(input)?;
+    let mut buf_in = vec![0u8; 32768]; // FST_GZIO_LEN
+    let mut buf_out = vec![0u8; 32768]; // FST_GZIO_LEN
+    let mut dec = miniz_oxide::inflate::core::DecompressorOxide::new();
+    let flags = miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_COMPUTE_ADLER32
+        | miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
+    let mut buf_in_remaining = 0;
     while remaining > 0 {
-        let read_len = std::cmp::min(buf.len(), remaining);
-        remaining -= read_len;
-        decoder.read_exact(&mut buf[..read_len])?;
-        target.write_all(&buf[..read_len])?;
+        // load more bytes into the input buffer
+        buf_in_remaining += input.read(&mut buf_in[buf_in_remaining..])?;
+        debug_assert!(
+            buf_in_remaining > 0,
+            "ran out of input data while gzip decompressing"
+        );
+
+        // decompress them
+        let (status, in_bytes, out_bytes) = miniz_oxide::inflate::core::decompress(
+            &mut dec,
+            &buf_in[0..buf_in_remaining],
+            buf_out.as_mut_slice(),
+            0,
+            flags,
+        );
+
+        // write decompressed output
+        buf_in_remaining -= in_bytes;
+        remaining -= out_bytes;
+        target.write_all(&buf_out[..out_bytes])?;
+
+        // check status
+        if status == miniz_oxide::inflate::TINFLStatus::Done {
+            debug_assert_eq!(remaining, 0);
+        }
+
+        // TODO: check for errors
     }
     Ok(())
 }

@@ -28,6 +28,8 @@ pub enum ReaderError {
     Lz4Decompress(#[from] lz4_flex::block::DecompressError),
     #[error("failed to decompress with zlib")]
     ZLibDecompress(#[from] miniz_oxide::inflate::DecompressError),
+    #[error("failed to parse a gzip header: {0}")]
+    GZipHeader(String),
     #[error("failed to decode string")]
     Utf8(#[from] std::str::Utf8Error),
     #[error("failed to decode string")]
@@ -584,22 +586,42 @@ pub(crate) fn write_blackout(
 const HIERARCHY_GZIP_COMPRESSION_LEVEL: u8 = 4;
 
 /// uncompresses zlib compressed bytes with a gzip header
-pub(crate) fn read_gzip_compressed_bytes(
-    input: &mut (impl Read + Seek),
+fn read_gzip_compressed_bytes(
+    input: &mut impl Read,
     uncompressed_len: usize,
     compressed_len: usize,
 ) -> ReadResult<Vec<u8>> {
-    let header = read_bytes(input, 10)?;
-    let correct_magic = header[0] == 0x1f && header[1] == 0x8f;
-    let is_deflate_compressed = header[2] == 8;
-    let flag = header[3];
-    // TODO: report errors
+    read_gzip_header(input)?;
     // we do not care about other header bytes
     let data = read_bytes(input, compressed_len - 10)?;
     let uncompressed =
         miniz_oxide::inflate::decompress_to_vec_with_limit(data.as_slice(), uncompressed_len)?;
     debug_assert_eq!(uncompressed.len(), uncompressed_len);
     Ok(uncompressed)
+}
+
+pub(crate) fn read_gzip_header(input: &mut impl Read) -> ReadResult<()> {
+    let header = read_bytes(input, 10)?;
+    let correct_magic = header[0] == 0x1f && header[1] == 0x8b;
+    if !correct_magic {
+        return Err(ReaderError::GZipHeader(format!(
+            "expected magic bytes (0x1f, 0x8b) got {header:x?}"
+        )));
+    }
+    let is_deflate_compressed = header[2] == 8;
+    if !is_deflate_compressed {
+        return Err(ReaderError::GZipHeader(format!(
+            "expected deflate compression (8) got {:x?}",
+            header[2]
+        )));
+    }
+    let flag = header[3];
+    if flag != 0 {
+        return Err(ReaderError::GZipHeader(format!(
+            "TODO currently extra flags are not supported {flag}"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn read_hierarchy_bytes(
@@ -632,7 +654,7 @@ pub(crate) fn read_hierarchy_bytes(
 
 #[cfg(test)]
 const GZIP_HEADER: [u8; 10] = [
-    0x1f, 0x8f, // magic bytes
+    0x1f, 0x8b, // magic bytes
     8,    // using deflate
     0,    // no flags
     0, 0, 0, 0,   // timestamp = 0

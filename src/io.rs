@@ -326,7 +326,7 @@ pub(crate) fn read_zlib_compressed_bytes(
         debug_assert!(is_zlib, "expected a zlib compressed block!");
 
         let compressed = read_bytes(input, compressed_length as usize)?;
-        
+
         miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
             compressed.as_slice(),
             uncompressed_length as usize,

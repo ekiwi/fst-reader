@@ -523,6 +523,8 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
             }
         }
 
+        let mut buffer = Vec::new();
+
         for (time_id, time) in time_table.iter().enumerate() {
             // while we cannot ignore signal changes before the start of the window
             // (since the signal might retain values for multiple cycles),
@@ -530,6 +532,14 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
             if *time > self.filter.end {
                 break;
             }
+
+            let eof_error = || {
+                ReaderError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "unexpected eof",
+                ))
+            };
+
             // handles cannot be zero
             while tc_head[time_id] != 0 {
                 let signal_id = (tc_head[time_id] - 1) as usize; // convert handle to index
@@ -546,8 +556,8 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
-                        let value = read_bytes(&mut mu_slice, len as usize)?;
-                        (self.callback)(*time, signal_handle, FstSignalValue::String(&value));
+                        let value = mu_slice.get(..len as usize).ok_or_else(eof_error)?;
+                        (self.callback)(*time, signal_handle, FstSignalValue::String(value));
                         len + skiplen2
                     }
                     len => {
@@ -556,15 +566,14 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
                             let (value, len) = if (vli & 1) == 0 {
                                 // if bit0 is zero -> 2-state
                                 let read_len = signal_len.div_ceil(8);
-                                let bytes = read_bytes(&mut mu_slice, read_len)?;
-                                (
-                                    multi_bit_digital_signal_to_chars(&bytes, signal_len),
-                                    read_len as u32,
-                                )
+                                let bytes = mu_slice.get(..read_len).ok_or_else(eof_error)?;
+                                multi_bit_digital_signal_to_chars(bytes, signal_len, &mut buffer);
+                                (buffer.as_slice(), read_len as u32)
                             } else {
-                                (read_bytes(&mut mu_slice, signal_len)?, len)
+                                let value = mu_slice.get(..signal_len).ok_or_else(eof_error)?;
+                                (value, len)
                             };
-                            (self.callback)(*time, signal_handle, FstSignalValue::String(&value));
+                            (self.callback)(*time, signal_handle, FstSignalValue::String(value));
                             len
                         } else {
                             assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");

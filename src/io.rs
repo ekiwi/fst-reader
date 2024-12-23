@@ -282,15 +282,14 @@ pub(crate) fn one_bit_signal_value_to_char(vli: u32) -> u8 {
 
 /// Decodes a digital (1/0) signal. This is indicated by bit0 in vli being cleared.
 #[inline]
-pub(crate) fn multi_bit_digital_signal_to_chars(bytes: &[u8], len: usize) -> Vec<u8> {
-    let mut chars = Vec::with_capacity(len);
-    for ii in 0..len {
+pub(crate) fn multi_bit_digital_signal_to_chars(bytes: &[u8], len: usize, output: &mut Vec<u8>) {
+    output.resize(len, 0);
+    for (ii, out) in output.iter_mut().enumerate() {
         let byte_id = ii / 8;
         let bit_id = 7 - (ii & 7);
         let bit = (bytes[byte_id] >> bit_id) & 1;
-        chars.push(bit | b'0');
+        *out = bit | b'0';
     }
-    chars
 }
 
 pub(crate) fn read_one_bit_signal_time_delta(bytes: &[u8], offset: u32) -> ReadResult<usize> {

@@ -21,3 +21,5 @@ leb128 = "0.2.5"
 proptest = "1.x"
 proptest-derive = "0.5"
 
+[profile.release]
+debug = true

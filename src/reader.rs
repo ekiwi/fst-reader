@@ -636,7 +636,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
 
             // only read frame if this is the first section and there is no other data for
             // the start time
-            if is_first_section && time_table[0] > start_time {
+            if is_first_section && (time_table.is_empty() || time_table[0] > start_time) {
                 read_frame(
                     &mut self.input,
                     section.file_offset,

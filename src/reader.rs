@@ -19,6 +19,9 @@ enum InputVariant<R: BufRead + Seek> {
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
 }
 
+/// Filter the changes by time and/or signals
+/// 
+/// The time filter is inclusive, i.e. it includes all changes in `start..=end`.
 pub struct FstFilter {
     pub start: u64,
     pub end: Option<u64>,

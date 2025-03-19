@@ -1,6 +1,6 @@
 [package]
 name = "fst-reader"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 authors = ["Kevin Laeufer <laeufer@cornell.edu>"]
 description = "FST wavedump format reader implemented in safe Rust. Formerly known as fst-native."

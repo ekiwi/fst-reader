@@ -5,7 +5,6 @@
 
 use crate::io::*;
 use crate::types::*;
-use miniz_oxide::{MZResult, MZStatus, StreamResult};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
@@ -276,12 +275,12 @@ fn decompress_gz_in_chunks(
     target: &mut impl Write,
 ) -> Result<()> {
     read_gzip_header(input)?;
-    let mut buf_in = vec![0u8; 32768]; // FST_GZIO_LEN
+    let mut buf_in = vec![0u8; 32768 / 2]; // FST_GZIO_LEN
     let mut buf_out = vec![0u8; 32768 * 2]; // FST_GZIO_LEN
 
     let mut state = miniz_oxide::inflate::stream::InflateState::new(miniz_oxide::DataFormat::Raw);
     let mut buf_in_remaining = 0;
-    loop {
+    while remaining > 0 {
         // load more bytes into the input buffer
         buf_in_remaining += input.read(&mut buf_in[buf_in_remaining..])?;
         debug_assert!(
@@ -301,25 +300,30 @@ fn decompress_gz_in_chunks(
 
         match res.status {
             Ok(status) => {
-                // write decompressed output
+                // move bytes that were not consumed to the start of the buffer and update the length
+                buf_in.copy_within(res.bytes_consumed..buf_in_remaining, 0);
                 buf_in_remaining -= res.bytes_consumed;
-                remaining -= res.bytes_written;
-                target.write_all(&buf_out[..res.bytes_written])?;
+
+                // write decompressed output
+                let out_bytes = std::cmp::min(res.bytes_written, remaining);
+                remaining -= out_bytes;
+                target.write_all(&buf_out[..out_bytes])?;
 
                 match status {
-                    MZStatus::Ok => {
+                    miniz_oxide::MZStatus::Ok => {
                         // nothing to do
                     }
-                    MZStatus::StreamEnd => {
-                        break;
+                    miniz_oxide::MZStatus::StreamEnd => {
+                        debug_assert_eq!(remaining, 0);
+                        return Ok(());
                     }
-                    MZStatus::NeedDict => {
-                        todo!()
+                    miniz_oxide::MZStatus::NeedDict => {
+                        todo!("hande NeedDict status");
                     }
                 }
             }
             Err(err) => {
-                panic!("{err:?}");
+                return Err(ReaderError::GZipBody(format!("{err:?}")));
             }
         }
     }

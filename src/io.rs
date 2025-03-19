@@ -30,6 +30,8 @@ pub enum ReaderError {
     ZLibDecompress(#[from] miniz_oxide::inflate::DecompressError),
     #[error("failed to parse a gzip header: {0}")]
     GZipHeader(String),
+    #[error("failed to decompress gzip stream: {0}")]
+    GZipBody(String),
     #[error("failed to decode string")]
     Utf8(#[from] std::str::Utf8Error),
     #[error("failed to decode string")]

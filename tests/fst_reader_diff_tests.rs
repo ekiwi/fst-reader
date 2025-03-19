@@ -452,6 +452,11 @@ fn diff_ncsim_ffdiv() {
     run_diff_test("fsts/ncsim/ffdiv_32bit_tb.vcd.fst", &FstFilter::all());
 }
 
+#[test]
+fn diff_nvc_wellen_issue_47() {
+    run_diff_test("fsts/nvc/wellen_issue_47.fst", &FstFilter::all());
+}
+
 /// This file was provided by Augusto Fraga Giachero in the following issue:
 /// https://github.com/ekiwi/wellen/issues/9
 #[test]

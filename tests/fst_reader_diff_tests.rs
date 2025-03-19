@@ -375,6 +375,11 @@ fn diff_ghdl_pcpu() {
 }
 
 #[test]
+fn diff_ghdl_wellen_issue_47() {
+    run_diff_test("fsts/ghdl/wellen_issue_47.fst", &FstFilter::all());
+}
+
+#[test]
 fn diff_ghdl_oscar_ghdl() {
     run_diff_test("fsts/ghdl/oscar/ghdl.fst", &FstFilter::all());
 }

@@ -5,6 +5,7 @@
 
 use crate::io::*;
 use crate::types::*;
+use miniz_oxide::{MZResult, MZStatus, StreamResult};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
@@ -20,7 +21,7 @@ enum InputVariant<R: BufRead + Seek> {
 }
 
 /// Filter the changes by time and/or signals
-/// 
+///
 /// The time filter is inclusive, i.e. it includes all changes in `start..=end`.
 pub struct FstFilter {
     pub start: u64,
@@ -276,12 +277,11 @@ fn decompress_gz_in_chunks(
 ) -> Result<()> {
     read_gzip_header(input)?;
     let mut buf_in = vec![0u8; 32768]; // FST_GZIO_LEN
-    let mut buf_out = vec![0u8; 32768]; // FST_GZIO_LEN
-    let mut dec = miniz_oxide::inflate::core::DecompressorOxide::new();
-    let flags = miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_COMPUTE_ADLER32
-        | miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
+    let mut buf_out = vec![0u8; 32768 * 2]; // FST_GZIO_LEN
+
+    let mut state = miniz_oxide::inflate::stream::InflateState::new(miniz_oxide::DataFormat::Raw);
     let mut buf_in_remaining = 0;
-    while remaining > 0 {
+    loop {
         // load more bytes into the input buffer
         buf_in_remaining += input.read(&mut buf_in[buf_in_remaining..])?;
         debug_assert!(
@@ -290,26 +290,40 @@ fn decompress_gz_in_chunks(
         );
 
         // decompress them
-        let (status, in_bytes, out_bytes) = miniz_oxide::inflate::core::decompress(
-            &mut dec,
+        let res = miniz_oxide::inflate::stream::inflate(
+            &mut state,
             &buf_in[0..buf_in_remaining],
             buf_out.as_mut_slice(),
-            0,
-            flags,
+            miniz_oxide::MZFlush::None,
         );
 
-        // write decompressed output
-        buf_in_remaining -= in_bytes;
-        remaining -= out_bytes;
-        target.write_all(&buf_out[..out_bytes])?;
+        println!("{res:?}\nremaining={remaining}");
 
-        // check status
-        if status == miniz_oxide::inflate::TINFLStatus::Done {
-            debug_assert_eq!(remaining, 0);
+        match res.status {
+            Ok(status) => {
+                // write decompressed output
+                buf_in_remaining -= res.bytes_consumed;
+                remaining -= res.bytes_written;
+                target.write_all(&buf_out[..res.bytes_written])?;
+
+                match status {
+                    MZStatus::Ok => {
+                        // nothing to do
+                    }
+                    MZStatus::StreamEnd => {
+                        break;
+                    }
+                    MZStatus::NeedDict => {
+                        todo!()
+                    }
+                }
+            }
+            Err(err) => {
+                panic!("{err:?}");
+            }
         }
-
-        // TODO: check for errors
     }
+
     Ok(())
 }
 

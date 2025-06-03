@@ -633,28 +633,38 @@ pub(crate) fn read_hierarchy_bytes(
     input: &mut (impl Read + Seek),
     compression: HierarchyCompression,
 ) -> ReadResult<Vec<u8>> {
-    let section_length = read_u64(input)? as usize;
-    let uncompressed_length = read_u64(input)? as usize;
-    let compressed_length = section_length - 2 * 8;
-
-    let bytes = match compression {
-        HierarchyCompression::ZLib => {
-            read_gzip_compressed_bytes(input, uncompressed_length, compressed_length)?
+    Ok(match compression {
+        HierarchyCompression::Uncompressed => {
+            let mut buf: Vec<u8> = Vec::new();
+            input.read_to_end(&mut buf)?;
+            buf
         }
-        HierarchyCompression::Lz4 => {
-            read_lz4_compressed_bytes(input, uncompressed_length, compressed_length)?
+        _ => {
+            let section_length = read_u64(input)? as usize;
+            let uncompressed_length = read_u64(input)? as usize;
+            let compressed_length = section_length - 2 * 8;
+            let bytes = match compression {
+                HierarchyCompression::Uncompressed => unreachable!(),
+                HierarchyCompression::ZLib => {
+                    read_gzip_compressed_bytes(input, uncompressed_length, compressed_length)?
+                }
+                HierarchyCompression::Lz4 => {
+                    read_lz4_compressed_bytes(input, uncompressed_length, compressed_length)?
+                }
+                HierarchyCompression::Lz4Duo => {
+                    // the length after the _first_ decompression
+                    let (len, skiplen) = read_variant_u64(input)?;
+                    let lvl1_len = len as usize;
+                    let lvl1 =
+                        read_lz4_compressed_bytes(input, lvl1_len, compressed_length - skiplen)?;
+                    let mut lvl1_reader = lvl1.as_slice();
+                    read_lz4_compressed_bytes(&mut lvl1_reader, uncompressed_length, lvl1_len)?
+                }
+            };
+            assert_eq!(bytes.len(), uncompressed_length);
+            bytes
         }
-        HierarchyCompression::Lz4Duo => {
-            // the length after the _first_ decompression
-            let (len, skiplen) = read_variant_u64(input)?;
-            let lvl1_len = len as usize;
-            let lvl1 = read_lz4_compressed_bytes(input, lvl1_len, compressed_length - skiplen)?;
-            let mut lvl1_reader = lvl1.as_slice();
-            read_lz4_compressed_bytes(&mut lvl1_reader, uncompressed_length, lvl1_len)?
-        }
-    };
-    assert_eq!(bytes.len(), uncompressed_length);
-    Ok(bytes)
+    })
 }
 
 #[cfg(test)]
@@ -686,34 +696,43 @@ pub(crate) fn write_hierarchy_bytes(
     compression: HierarchyCompression,
     bytes: &[u8],
 ) -> WriteResult<()> {
-    // remember start to fix the section length afterwards
-    let start = output.stream_position()?;
-    write_u64(output, 0)?; // dummy section length
-    let uncompressed_length = bytes.len() as u64;
-    write_u64(output, uncompressed_length)?;
-
     match compression {
-        HierarchyCompression::ZLib => {
-            write_gzip_compressed_bytes(output, bytes, HIERARCHY_GZIP_COMPRESSION_LEVEL)?;
+        HierarchyCompression::Uncompressed => {
+            output.write_all(bytes)?;
         }
-        HierarchyCompression::Lz4 => {
-            let compressed = lz4_flex::compress(bytes);
-            output.write_all(&compressed)?;
-        }
-        HierarchyCompression::Lz4Duo => {
-            let compressed_lvl1 = lz4_flex::compress(bytes);
-            let lvl1_len = compressed_lvl1.len() as u64;
-            write_variant_u64(output, lvl1_len)?;
-            let compressed_lvl2 = lz4_flex::compress(&compressed_lvl1);
-            output.write_all(&compressed_lvl2)?;
+        _ => {
+            // remember start to fix the section length afterwards
+            let start = output.stream_position()?;
+            write_u64(output, 0)?; // dummy section length
+            let uncompressed_length = bytes.len() as u64;
+            write_u64(output, uncompressed_length)?;
+
+            match compression {
+                HierarchyCompression::Uncompressed => unreachable!(),
+                HierarchyCompression::ZLib => {
+                    write_gzip_compressed_bytes(output, bytes, HIERARCHY_GZIP_COMPRESSION_LEVEL)?;
+                }
+                HierarchyCompression::Lz4 => {
+                    let compressed = lz4_flex::compress(bytes);
+                    output.write_all(&compressed)?;
+                }
+                HierarchyCompression::Lz4Duo => {
+                    let compressed_lvl1 = lz4_flex::compress(bytes);
+                    let lvl1_len = compressed_lvl1.len() as u64;
+                    write_variant_u64(output, lvl1_len)?;
+                    let compressed_lvl2 = lz4_flex::compress(&compressed_lvl1);
+                    output.write_all(&compressed_lvl2)?;
+                }
+            };
+
+            // fix section length
+            let end = output.stream_position()?;
+            output.seek(SeekFrom::Start(start))?;
+            write_u64(output, end - start)?;
+            output.seek(SeekFrom::Start(end))?;
         }
     };
 
-    // fix section length
-    let end = output.stream_position()?;
-    output.seek(SeekFrom::Start(start))?;
-    write_u64(output, end - start)?;
-    output.seek(SeekFrom::Start(end))?;
     Ok(())
 }
 
@@ -1762,7 +1781,10 @@ mod tests {
     }
 
     fn do_test_read_write_hierarchy_bytes(tpe: HierarchyCompression, bytes: Vec<u8>) {
-        let max_len = std::cmp::max(64, bytes.len() + 3 * 8);
+        let max_len = match tpe {
+            HierarchyCompression::Uncompressed => bytes.len(),
+            _ => std::cmp::max(64, bytes.len() + 3 * 8),
+        };
         let mut buf = std::io::Cursor::new(vec![0u8; max_len]);
         write_hierarchy_bytes(&mut buf, tpe, &bytes).unwrap();
         buf.seek(SeekFrom::Start(0)).unwrap();

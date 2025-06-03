@@ -8,15 +8,17 @@ use crate::types::*;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// Reads in a FST file.
-pub struct FstReader<R: BufRead + Seek> {
-    input: InputVariant<R>,
+pub struct FstReader<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
+    input: InputVariant<R, H>,
     meta: MetaData,
 }
 
-enum InputVariant<R: BufRead + Seek> {
+enum InputVariant<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
     Original(R),
+    Incomplete(R, H),
     // Uncompressed(BufReader<std::fs::File>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
+    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, H),
 }
 
 /// Filter the changes by time and/or signals
@@ -80,6 +82,67 @@ pub struct FstHeader {
     pub timescale_exponent: i8,
 }
 
+impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
+    pub fn open_incomplete(input: R, hierarchy: H) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, false)
+    }
+
+    pub fn open_incomplete_and_read_time_table(input: R, hierarchy: H) -> Result<Self> {
+        Self::open_incomplete_internal(input, hierarchy, true)
+    }
+
+    fn open_incomplete_internal(
+        mut input: R,
+        mut hierarchy: H,
+        read_time_table: bool,
+    ) -> Result<Self> {
+        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
+        match uncompressed_input {
+            UncompressGzipWrapper::None => {
+                let (input, meta) = Self::open_incomplete_internal_uncompressed(
+                    input,
+                    &mut hierarchy,
+                    read_time_table,
+                )?;
+                Ok(FstReader {
+                    input: InputVariant::Incomplete(input, hierarchy),
+                    meta,
+                })
+            }
+            UncompressGzipWrapper::InMemory(uc) => {
+                let (uc2, meta) = Self::open_incomplete_internal_uncompressed(
+                    uc,
+                    &mut hierarchy,
+                    read_time_table,
+                )?;
+                Ok(FstReader {
+                    input: InputVariant::IncompleteUncompressedInMem(uc2, hierarchy),
+                    meta,
+                })
+            }
+        }
+    }
+
+    fn open_incomplete_internal_uncompressed<I: BufRead + Seek>(
+        input: I,
+        hierarchy: &mut H,
+        read_time_table: bool,
+    ) -> Result<(I, MetaData)> {
+        let mut header_reader = HeaderReader::new(input);
+        match header_reader.read(read_time_table) {
+            Ok(_) => {}
+            Err(ReaderError::MissingGeometry() | ReaderError::MissingHierarchy()) => {
+                header_reader
+                    .hierarchy
+                    .get_or_insert((HierarchyCompression::Uncompressed, 0));
+                header_reader.reconstruct_geometry(hierarchy)?;
+            }
+            Err(e) => return Err(e),
+        };
+        Ok(header_reader.into_input_and_meta_data().unwrap())
+    }
+}
+
 impl<R: BufRead + Seek> FstReader<R> {
     /// Reads in the FST file meta-data.
     pub fn open(input: R) -> Result<Self> {
@@ -113,7 +176,9 @@ impl<R: BufRead + Seek> FstReader<R> {
             }
         }
     }
+}
 
+impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     pub fn get_header(&self) -> FstHeader {
         FstHeader {
             start_time: self.meta.header.start_time,
@@ -137,7 +202,11 @@ impl<R: BufRead + Seek> FstReader<R> {
     pub fn read_hierarchy(&mut self, callback: impl FnMut(FstHierarchyEntry)) -> Result<()> {
         match &mut self.input {
             InputVariant::Original(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::Incomplete(_, input) => read_hierarchy(input, &self.meta, callback),
             InputVariant::UncompressedInMem(input) => read_hierarchy(input, &self.meta, callback),
+            InputVariant::IncompleteUncompressedInMem(_, input) => {
+                read_hierarchy(input, &self.meta, callback)
+            }
         }
     }
 
@@ -171,7 +240,13 @@ impl<R: BufRead + Seek> FstReader<R> {
             InputVariant::Original(input) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
+            InputVariant::Incomplete(input, _) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
             InputVariant::UncompressedInMem(input) => {
+                read_signals(input, &self.meta, &data_filter, callback)
+            }
+            InputVariant::IncompleteUncompressedInMem(input, _) => {
                 read_signals(input, &self.meta, &data_filter, callback)
             }
         }
@@ -413,6 +488,23 @@ impl<R: Read + Seek> HeaderReader<R> {
             kind,
             mem_required_for_traversal,
         };
+
+        // incomplete fst files may have start_time and end_time set to 0,
+        // in which case we can infer it from the data
+        if let Some(Header {
+            start_time: header_start,
+            end_time: header_end,
+            ..
+        }) = self.header.as_mut()
+        {
+            if *header_start == 0 && *header_end == 0 {
+                *header_end = end_time;
+                if self.data_sections.is_empty() {
+                    *header_start = start_time;
+                }
+            }
+        }
+
         self.data_sections.push(info);
         Ok(())
     }
@@ -433,6 +525,27 @@ impl<R: Read + Seek> HeaderReader<R> {
             "Only a single hierarchy block is expected!"
         );
         self.hierarchy = Some((compression, file_offset));
+        Ok(())
+    }
+
+    fn reconstruct_geometry(&mut self, hierarchy: &mut (impl BufRead + Seek)) -> Result<()> {
+        hierarchy.seek(SeekFrom::Start(0))?;
+        let bytes = read_hierarchy_bytes(hierarchy, HierarchyCompression::Uncompressed)?;
+        let mut input = bytes.as_slice();
+        let mut handle_count = 0u32;
+        let mut signals: Vec<SignalInfo> = Vec::new();
+        while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
+            match entry {
+                FstHierarchyEntry::Var {
+                    length, is_alias, ..
+                } if !is_alias => {
+                    // dbg!(&entry);
+                    signals.push(SignalInfo::from_file_format(length));
+                }
+                _ => {}
+            }
+        }
+        self.signals = Some(signals);
         Ok(())
     }
 

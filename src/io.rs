@@ -58,6 +58,10 @@ pub enum ReaderError {
     AttributeType(#[from] TryFromPrimitiveError<AttributeType>),
     #[error("Unexpected misc attribute type")]
     MiscType(#[from] TryFromPrimitiveError<MiscType>),
+    #[error("The FST file is incomplete: geometry block is missing.")]
+    MissingGeometry(),
+    #[error("The FST file is incomplete: hierarchy block is missing.")]
+    MissingHierarchy(),
 }
 
 pub type ReadResult<T> = Result<T, ReaderError>;

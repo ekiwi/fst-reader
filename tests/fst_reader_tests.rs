@@ -58,6 +58,15 @@ fn load_sigrok() {
 }
 
 #[test]
+fn load_verilator_incomplete() {
+    let f = std::fs::File::open("fsts/verilator/verilator-incomplete.fst")
+        .unwrap_or_else(|_| panic!("Failed to open file"));
+
+    let result = FstReader::open(std::io::BufReader::new(f));
+    assert!(matches!(result, Err(ReaderError::MissingGeometry())));
+}
+
+#[test]
 fn load_time_table_treadle_gcd() {
     let filename = "fsts/treadle/GCD.vcd.fst";
     let f = std::fs::File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));

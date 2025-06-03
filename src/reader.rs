@@ -458,10 +458,22 @@ impl<R: Read + Seek> HeaderReader<R> {
                 BlockType::GZipWrapper => panic!("GZip Wrapper should have been handled earlier!"),
                 BlockType::Skip => {
                     let section_length = read_u64(&mut self.input)?;
+                    if section_length == 0 {
+                        break;
+                    }
                     self.skip(section_length, 8)?;
                 }
             };
         }
+
+        if self.signals.is_none() {
+            return Err(ReaderError::MissingGeometry());
+        }
+
+        if self.hierarchy.is_none() {
+            return Err(ReaderError::MissingHierarchy());
+        }
+
         Ok(())
     }
 

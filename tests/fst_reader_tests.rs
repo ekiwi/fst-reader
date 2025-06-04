@@ -95,9 +95,11 @@ fn find_fst_files(dir: &Path) -> Vec<PathBuf> {
 fn test_is_fst_file() {
     let fsts = find_fst_files(Path::new("fsts/"));
     for filename in fsts {
+        dbg!(&filename);
         let mut f = std::fs::File::open(filename.clone())
             .unwrap_or_else(|_| panic!("Failed to open {:?}", filename));
         let is_fst = is_fst_file(&mut f);
+        dbg!(is_fst);
         let should_be_fst = true;
         assert_eq!(
             is_fst, should_be_fst,

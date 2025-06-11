@@ -193,9 +193,11 @@ pub fn is_fst_file(input: &mut (impl Read + Seek)) -> bool {
 
 /// Returns an error or false if not an fst. Returns Ok(true) only if we think it is an fst.
 fn internal_check_fst_file(input: &mut (impl Read + Seek)) -> Result<bool> {
+    let mut seen_header = false;
+
     // try to iterate over all blocks
     loop {
-        let _block_tpe = match read_block_tpe(input) {
+        let block_tpe = match read_block_tpe(input) {
             Err(ReaderError::Io(_)) => {
                 break;
             }
@@ -203,9 +205,19 @@ fn internal_check_fst_file(input: &mut (impl Read + Seek)) -> Result<bool> {
             Ok(tpe) => tpe,
         };
         let section_length = read_u64(input)?;
+        match block_tpe {
+            BlockType::GZipWrapper => return Ok(true),
+            BlockType::Header => {
+                seen_header = true;
+            }
+            BlockType::Skip if section_length == 0 => {
+                break;
+            }
+            _ => {}
+        }
         input.seek(SeekFrom::Current((section_length as i64) - 8))?;
     }
-    Ok(true)
+    Ok(seen_header)
 }
 
 fn read_hierarchy(
@@ -437,6 +449,8 @@ impl<R: Read + Seek> HeaderReader<R> {
                 Ok(tpe) => tpe,
             };
 
+            dbg!(&block_tpe);
+
             match block_tpe {
                 BlockType::Header => {
                     let (header, endian) = read_header(&mut self.input)?;
@@ -458,10 +472,22 @@ impl<R: Read + Seek> HeaderReader<R> {
                 BlockType::GZipWrapper => panic!("GZip Wrapper should have been handled earlier!"),
                 BlockType::Skip => {
                     let section_length = read_u64(&mut self.input)?;
+                    if section_length == 0 {
+                        break;
+                    }
                     self.skip(section_length, 8)?;
                 }
             };
         }
+
+        if self.signals.is_none() {
+            return Err(ReaderError::MissingGeometry());
+        }
+
+        if self.hierarchy.is_none() {
+            return Err(ReaderError::MissingHierarchy());
+        }
+
         Ok(())
     }
 

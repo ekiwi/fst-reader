@@ -83,6 +83,14 @@ pub struct FstHeader {
 }
 
 impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
+    /// Reads in the meta-data of an incomplete FST file with external `.hier` file.
+    ///
+    /// When the creation of an FST file using `fstlib` is interrupted, some information
+    /// such as a geometry block or hierarchy block may be missing (as indicated by
+    /// [`ReaderError::MissingGeometry`] and [`ReaderError::MissingHierarchy`]).
+    ///
+    /// This function tries to reconstruct these missing blocks from an external `.hier`
+    /// file, which is commonly generated while outputting FST files.
     pub fn open_incomplete(input: R, hierarchy: H) -> Result<Self> {
         Self::open_incomplete_internal(input, hierarchy, false)
     }
@@ -528,6 +536,8 @@ impl<R: Read + Seek> HeaderReader<R> {
         Ok(())
     }
 
+    // The geometry block contains the types and lengths of variables (see [`SignalInfo`]).
+    // In case this block is missing from the FST file, it can be reconstructed from the hierarchy.
     fn reconstruct_geometry(&mut self, hierarchy: &mut (impl BufRead + Seek)) -> Result<()> {
         hierarchy.seek(SeekFrom::Start(0))?;
         let bytes = read_hierarchy_bytes(hierarchy, HierarchyCompression::Uncompressed)?;
@@ -539,7 +549,6 @@ impl<R: Read + Seek> HeaderReader<R> {
                 FstHierarchyEntry::Var {
                     length, is_alias, ..
                 } if !is_alias => {
-                    // dbg!(&entry);
                     signals.push(SignalInfo::from_file_format(length));
                 }
                 _ => {}

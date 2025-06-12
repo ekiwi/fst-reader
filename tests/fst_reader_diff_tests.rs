@@ -188,8 +188,8 @@ fn fst_sys_hierarchy_to_str(entry: &fst_sys::fstHier) -> String {
     }
 }
 
-fn diff_hierarchy<R: std::io::BufRead + std::io::Seek>(
-    our_reader: &mut FstReader<R>,
+fn diff_hierarchy<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+    our_reader: &mut FstReader<R, H>,
     mut exp_hierarchy: VecDeque<String>,
 ) -> Vec<bool> {
     let mut is_real = Vec::new();
@@ -289,8 +289,8 @@ extern "C" fn var_signal_change_callback(
     data.out.push_back(signal);
 }
 
-fn diff_signals<R: std::io::BufRead + std::io::Seek>(
-    our_reader: &mut FstReader<R>,
+fn diff_signals<R: std::io::BufRead + std::io::Seek, H: std::io::BufRead + std::io::Seek>(
+    our_reader: &mut FstReader<R, H>,
     mut exp_signals: VecDeque<(u64, u32, String)>,
 ) {
     let check = |time: u64, handle: FstSignalHandle, value: FstSignalValue| {
@@ -308,15 +308,46 @@ fn diff_signals<R: std::io::BufRead + std::io::Seek>(
     our_reader.read_signals(&filter, check).unwrap();
 }
 
-fn run_diff_test(filename: &str, _filter: &FstFilter) {
+fn run_diff_test(filename: &str, filter: &FstFilter) {
     // open file with FST library from GTKWave
     let c_path = CString::new(filename).unwrap();
     let exp_handle = unsafe { fst_sys::fstReaderOpen(c_path.as_ptr()) };
 
     // open file with our library
     let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
-    let mut our_reader = FstReader::open(std::io::BufReader::new(our_f)).unwrap();
+    let our_reader = FstReader::open(std::io::BufReader::new(our_f)).unwrap();
+    run_diff_test_internal(our_reader, exp_handle, filter);
 
+    // close C-library handle
+    unsafe { fst_sys::fstReaderClose(exp_handle) };
+}
+fn run_incomplete_diff_test(filename: &str, hierarchy: &str, filter: &FstFilter) {
+    // open file with FST library from GTKWave
+    let c_path = CString::new(filename).unwrap();
+    let exp_handle = unsafe { fst_sys::fstReaderOpen(c_path.as_ptr()) };
+
+    // open file with our library
+    let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
+    let our_h = File::open(hierarchy).unwrap_or_else(|_| panic!("Failed to open {}", filename));
+    let our_reader = FstReader::open_incomplete(
+        std::io::BufReader::new(our_f),
+        std::io::BufReader::new(our_h),
+    )
+    .unwrap();
+    run_diff_test_internal(our_reader, exp_handle, filter);
+
+    // close C-library handle
+    unsafe { fst_sys::fstReaderClose(exp_handle) };
+}
+
+fn run_diff_test_internal<
+    R: std::io::BufRead + std::io::Seek,
+    H: std::io::BufRead + std::io::Seek,
+>(
+    mut our_reader: FstReader<R, H>,
+    exp_handle: *mut c_void,
+    _filter: &FstFilter,
+) {
     // compare header
     let exp_header = fst_sys_load_header(exp_handle);
     let our_header = our_reader.get_header();
@@ -329,9 +360,6 @@ fn run_diff_test(filename: &str, _filter: &FstFilter) {
     // compare signals
     let exp_signals = fst_sys_load_signals(exp_handle, &is_real);
     diff_signals(&mut our_reader, exp_signals);
-
-    // close C-library handle
-    unsafe { fst_sys::fstReaderClose(exp_handle) };
 }
 
 #[test]
@@ -571,6 +599,15 @@ fn diff_verilator_swerv1() {
 #[test]
 fn diff_verilator_vlt_dump() {
     run_diff_test("fsts/verilator/vlt_dump.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_verilator_incomplete_dump() {
+    run_incomplete_diff_test(
+        "fsts/verilator/verilator-incomplete.fst",
+        "fsts/verilator/verilator-incomplete.fst.hier",
+        &FstFilter::all(),
+    );
 }
 
 #[test]

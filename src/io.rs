@@ -1282,7 +1282,7 @@ impl From<Vec<SignalDataLoc>> for OffsetTable {
 }
 
 impl OffsetTable {
-    pub(crate) fn iter(&self) -> OffsetTableIter {
+    pub(crate) fn iter(&self) -> OffsetTableIter<'_> {
         OffsetTableIter {
             table: self,
             signal_idx: 0,

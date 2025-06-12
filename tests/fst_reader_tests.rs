@@ -7,7 +7,6 @@
 // and thus we cannot compare.
 
 use fst_reader::*;
-use std::collections::binary_heap::Iter;
 use std::io::{BufRead, Seek};
 use std::path::{Path, PathBuf};
 

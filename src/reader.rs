@@ -7,18 +7,20 @@ use crate::io::*;
 use crate::types::*;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
+trait BufReadSeek: BufRead + Seek {}
+impl<T> BufReadSeek for T where T: BufRead + Seek {}
+
 /// Reads in a FST file.
-pub struct FstReader<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
-    input: InputVariant<R, H>,
+pub struct FstReader<R: BufRead + Seek> {
+    input: InputVariant<R>,
     meta: MetaData,
 }
 
-enum InputVariant<R: BufRead + Seek, H = std::io::Cursor<Vec<u8>>> {
+enum InputVariant<R: BufRead + Seek> {
     Original(R),
-    Incomplete(R, H),
-    // Uncompressed(BufReader<std::fs::File>),
+    Incomplete(R, Box<dyn BufReadSeek + Sync + Send>),
     UncompressedInMem(std::io::Cursor<Vec<u8>>),
-    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, H),
+    IncompleteUncompressedInMem(std::io::Cursor<Vec<u8>>, Box<dyn BufReadSeek + Sync + Send>),
 }
 
 /// Filter the changes by time and/or signals
@@ -115,9 +117,7 @@ impl<R: BufRead + Seek> FstReader<R> {
             }
         }
     }
-}
 
-impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     /// Reads in the meta-data of an incomplete FST file with external `.hier` file.
     ///
     /// When the creation of an FST file using `fstlib` is interrupted, some information
@@ -126,15 +126,21 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     ///
     /// This function tries to reconstruct these missing blocks from an external `.hier`
     /// file, which is commonly generated while outputting FST files.
-    pub fn open_incomplete(input: R, hierarchy: H) -> Result<Self> {
+    pub fn open_incomplete<H: BufRead + Seek + Sync + Send + 'static>(
+        input: R,
+        hierarchy: H,
+    ) -> Result<Self> {
         Self::open_incomplete_internal(input, hierarchy, false)
     }
 
-    pub fn open_incomplete_and_read_time_table(input: R, hierarchy: H) -> Result<Self> {
+    pub fn open_incomplete_and_read_time_table<H: BufRead + Seek + Sync + Send + 'static>(
+        input: R,
+        hierarchy: H,
+    ) -> Result<Self> {
         Self::open_incomplete_internal(input, hierarchy, true)
     }
 
-    fn open_incomplete_internal(
+    fn open_incomplete_internal<H: BufRead + Seek + Sync + Send + 'static>(
         mut input: R,
         mut hierarchy: H,
         read_time_table: bool,
@@ -148,7 +154,7 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
                     read_time_table,
                 )?;
                 Ok(FstReader {
-                    input: InputVariant::Incomplete(input, hierarchy),
+                    input: InputVariant::Incomplete(input, Box::new(hierarchy)),
                     meta,
                 })
             }
@@ -159,14 +165,14 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
                     read_time_table,
                 )?;
                 Ok(FstReader {
-                    input: InputVariant::IncompleteUncompressedInMem(uc2, hierarchy),
+                    input: InputVariant::IncompleteUncompressedInMem(uc2, Box::new(hierarchy)),
                     meta,
                 })
             }
         }
     }
 
-    fn open_incomplete_internal_uncompressed<I: BufRead + Seek>(
+    fn open_incomplete_internal_uncompressed<I: BufRead + Seek, H: BufRead + Seek>(
         input: I,
         hierarchy: &mut H,
         read_time_table: bool,
@@ -184,9 +190,7 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
         };
         Ok(header_reader.into_input_and_meta_data().unwrap())
     }
-}
 
-impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     pub fn get_header(&self) -> FstHeader {
         FstHeader {
             start_time: self.meta.header.start_time,

@@ -82,6 +82,41 @@ pub struct FstHeader {
     pub timescale_exponent: i8,
 }
 
+impl<R: BufRead + Seek> FstReader<R> {
+    /// Reads in the FST file meta-data.
+    pub fn open(input: R) -> Result<Self> {
+        Self::open_internal(input, false)
+    }
+
+    pub fn open_and_read_time_table(input: R) -> Result<Self> {
+        Self::open_internal(input, true)
+    }
+
+    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
+        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
+        match uncompressed_input {
+            UncompressGzipWrapper::None => {
+                let mut header_reader = HeaderReader::new(input);
+                header_reader.read(read_time_table)?;
+                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::Original(input),
+                    meta,
+                })
+            }
+            UncompressGzipWrapper::InMemory(uc) => {
+                let mut header_reader = HeaderReader::new(uc);
+                header_reader.read(read_time_table)?;
+                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
+                Ok(FstReader {
+                    input: InputVariant::UncompressedInMem(uc2),
+                    meta,
+                })
+            }
+        }
+    }
+}
+
 impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
     /// Reads in the meta-data of an incomplete FST file with external `.hier` file.
     ///
@@ -148,41 +183,6 @@ impl<R: BufRead + Seek, H: BufRead + Seek> FstReader<R, H> {
             Err(e) => return Err(e),
         };
         Ok(header_reader.into_input_and_meta_data().unwrap())
-    }
-}
-
-impl<R: BufRead + Seek> FstReader<R> {
-    /// Reads in the FST file meta-data.
-    pub fn open(input: R) -> Result<Self> {
-        Self::open_internal(input, false)
-    }
-
-    pub fn open_and_read_time_table(input: R) -> Result<Self> {
-        Self::open_internal(input, true)
-    }
-
-    fn open_internal(mut input: R, read_time_table: bool) -> Result<Self> {
-        let uncompressed_input = uncompress_gzip_wrapper(&mut input)?;
-        match uncompressed_input {
-            UncompressGzipWrapper::None => {
-                let mut header_reader = HeaderReader::new(input);
-                header_reader.read(read_time_table)?;
-                let (input, meta) = header_reader.into_input_and_meta_data().unwrap();
-                Ok(FstReader {
-                    input: InputVariant::Original(input),
-                    meta,
-                })
-            }
-            UncompressGzipWrapper::InMemory(uc) => {
-                let mut header_reader = HeaderReader::new(uc);
-                header_reader.read(read_time_table)?;
-                let (uc2, meta) = header_reader.into_input_and_meta_data().unwrap();
-                Ok(FstReader {
-                    input: InputVariant::UncompressedInMem(uc2),
-                    meta,
-                })
-            }
-        }
     }
 }
 

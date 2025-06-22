@@ -116,3 +116,17 @@ fn test_is_fst_file() {
         );
     }
 }
+
+#[test]
+fn load_long_hierarchy_name() {
+    // This file contains hierarchy names longer than 512 bytes, which is
+    // the limit of the FST format (based on the specification).
+    // However, e.g., Verilator can output longer names than that and this file used to throw an error.
+    // See https://github.com/ekiwi/wellen/issues/49
+    let f =
+        std::fs::File::open("fsts/long_name.fst").unwrap_or_else(|_| panic!("Failed to open file"));
+
+    let mut result = FstReader::open(std::io::BufReader::new(f)).unwrap();
+
+    load_header(&mut result);
+}

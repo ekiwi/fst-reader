@@ -575,8 +575,6 @@ impl<R: Read + Seek> HeaderReader<R> {
                 Ok(tpe) => tpe,
             };
 
-            dbg!(&block_tpe);
-
             match block_tpe {
                 BlockType::Header => {
                     let (header, endian) = read_header(&mut self.input)?;

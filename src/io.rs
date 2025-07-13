@@ -1343,12 +1343,14 @@ impl Iterator for OffsetTableIter<'_> {
             return None;
         }
 
+        // read out result
+        let res = self.table.get_entry(self.signal_idx);
+        debug_assert!(res.is_some());
+
         // increment id for next call
         self.signal_idx += 1;
 
         // return result
-        let res = self.table.get_entry(self.signal_idx - 1);
-        debug_assert!(res.is_some());
         res
     }
 }
@@ -1358,12 +1360,12 @@ fn read_value_change_alias2(
     max_handle: u64,
     last_table_entry: u32,
 ) -> ReadResult<OffsetTable> {
-    let mut table = Vec::with_capacity(max_handle as usize);
+    let mut table = vec![SignalDataLoc::None; max_handle as usize];
+    let mut idx = 0_usize;
     let mut offset: Option<NonZeroU32> = None;
     let mut prev_alias = 0u32;
     let mut prev_offset_idx = 0usize;
     while !chain_bytes.is_empty() {
-        let idx = table.len();
         let kind = chain_bytes[0];
         if (kind & 1) == 1 {
             let shval = read_variant_i64(&mut chain_bytes)? >> 1;
@@ -1381,26 +1383,26 @@ fn read_value_change_alias2(
                     }
                     offset = Some(new_offset);
                     prev_offset_idx = idx;
-                    // push a placeholder which will be replaced as soon as we know the length
-                    table.push(SignalDataLoc::None);
+                    // increase index, value will be replaced as soon as we know the length
+                    idx += 1;
                 }
                 Ordering::Less => {
                     // new signal alias
                     prev_alias = (-shval - 1) as u32;
-                    table.push(SignalDataLoc::Alias(prev_alias));
+                    table[idx] = SignalDataLoc::Alias(prev_alias);
+                    idx += 1;
                 }
                 Ordering::Equal => {
                     // same signal alias as previous signal
-                    table.push(SignalDataLoc::Alias(prev_alias));
+                    table[idx] = SignalDataLoc::Alias(prev_alias);
+                    idx += 1;
                 }
             }
         } else {
             // a block of signals that do not have any data
             let (value, _) = read_variant_u32(&mut chain_bytes)?;
             let zeros = value >> 1;
-            for _ in 0..zeros {
-                table.push(SignalDataLoc::None);
-            }
+            idx += zeros as usize;
         }
     }
 
@@ -1409,6 +1411,8 @@ fn read_value_change_alias2(
         let len = NonZeroU32::new(last_table_entry - prev_offset.get()).unwrap();
         table[prev_offset_idx] = SignalDataLoc::Offset(prev_offset, len);
     }
+
+    debug_assert_eq!(max_handle as usize, idx);
 
     Ok(table.into())
 }

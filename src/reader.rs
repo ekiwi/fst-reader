@@ -395,8 +395,6 @@ fn decompress_gz_in_chunks(
             miniz_oxide::MZFlush::None,
         );
 
-        println!("{res:?}\nremaining={remaining}");
-
         match res.status {
             Ok(status) => {
                 // move bytes that were not consumed to the start of the buffer and update the length

@@ -6,7 +6,7 @@
 // Simple Rust implementation of FastLZ: https://github.com/ariya/FastLZ
 // Currently only reading is supported!
 
-use crate::io::{read_bytes, read_u8, ReadResult};
+use crate::io::{ReadResult, read_bytes, read_u8};
 use std::io::{Read, Seek, SeekFrom};
 
 pub(crate) fn decompress(
@@ -83,7 +83,7 @@ fn decompress_level2(input: &mut impl Read, input_len: usize, out: &mut Vec<u8>)
             let offset_code = read_u8(input)?;
             read_count += 1;
             start -= offset_code as usize; // offset adjustment
-                                           // lvl 2: match from 16-bit distance
+            // lvl 2: match from 16-bit distance
             if offset_code == 255 && byte0 & 0x1f == 31 {
                 let lvl2_offset_high = (read_u8(input)? as usize) << 8;
                 let lvl2_offset = lvl2_offset_high + read_u8(input)? as usize;

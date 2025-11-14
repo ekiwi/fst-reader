@@ -506,12 +506,12 @@ impl<R: Read + Seek> HeaderReader<R> {
             end_time: header_end,
             ..
         }) = self.header.as_mut()
+            && *header_start == 0
+            && *header_end == 0
         {
-            if *header_start == 0 && *header_end == 0 {
-                *header_end = end_time;
-                if self.data_sections.is_empty() {
-                    *header_start = start_time;
-                }
+            *header_end = end_time;
+            if self.data_sections.is_empty() {
+                *header_start = start_time;
             }
         }
 

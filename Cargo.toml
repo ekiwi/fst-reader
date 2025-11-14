@@ -19,7 +19,7 @@ miniz_oxide = { version = "0.8.2", features = ["std"] }
 [dev-dependencies]
 fst-sys = "0.2.0"
 leb128 = "0.2.5"
-proptest = "1.x"
+proptest = "1.*"
 proptest-derive = "0.5"
 
 [profile.release]

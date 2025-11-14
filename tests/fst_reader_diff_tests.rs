@@ -5,7 +5,7 @@
 
 use fst_reader::*;
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_uchar, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_uchar, c_void};
 use std::fs::File;
 
 mod utils;
@@ -33,11 +33,7 @@ fn fst_sys_load_hierarchy(handle: *mut c_void) -> VecDeque<String> {
     loop {
         let p = unsafe {
             let ptr = fst_sys::fstReaderIterateHier(handle);
-            if ptr.is_null() {
-                None
-            } else {
-                Some(&*ptr)
-            }
+            if ptr.is_null() { None } else { Some(&*ptr) }
         };
         if p.is_none() {
             break;

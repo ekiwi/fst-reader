@@ -4,8 +4,8 @@
 // author: Kevin Laeufer <laeufer@cornell.edu>
 // Contains basic read and write operations for FST files.
 
-use crate::types::*;
 use crate::FstSignalValue;
+use crate::types::*;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use std::cmp::Ordering;
 #[cfg(test)]
@@ -16,7 +16,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ReaderError {
-    #[error("failed to read a null terminated string because it exceeds the expected size of {0} bytes.\n{1}")]
+    #[error(
+        "failed to read a null terminated string because it exceeds the expected size of {0} bytes.\n{1}"
+    )]
     CStringTooLong(usize, String),
     #[error("failed to parse an enum table string: {0}\n{1}")]
     EnumTableString(String, String),

@@ -501,18 +501,18 @@ impl<R: Read + Seek> HeaderReader<R> {
 
         // incomplete fst files may have start_time and end_time set to 0,
         // in which case we can infer it from the data
-        if let Some(Header {
-            start_time: header_start,
-            end_time: header_end,
-            ..
-        }) = self.header.as_mut()
-            && *header_start == 0
-            && *header_end == 0
-        {
-            *header_end = end_time;
-            if self.data_sections.is_empty() {
-                *header_start = start_time;
+        match self.header.as_mut() {
+            Some(Header {
+                start_time: header_start,
+                end_time: header_end,
+                ..
+            }) if *header_start == 0 && *header_end == 0 => {
+                *header_end = end_time;
+                if self.data_sections.is_empty() {
+                    *header_start = start_time;
+                }
             }
+            _ => (),
         }
 
         self.data_sections.push(info);

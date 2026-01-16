@@ -128,3 +128,43 @@ fn load_long_hierarchy_name() {
 
     load_header(&mut result);
 }
+
+/// Test incomplete FST with 2 data sections reports correct end_time.
+#[test]
+fn test_multi_section_end_time_2sections() {
+    let fst = std::fs::File::open("fsts/partial/minimal_2sections.fst").unwrap();
+    let hier = std::fs::File::open("fsts/partial/minimal_2sections.fst.hier").unwrap();
+    let mut reader = FstReader::open_incomplete(
+        std::io::BufReader::new(fst),
+        std::io::BufReader::new(hier),
+    )
+    .unwrap();
+
+    assert_eq!(reader.get_header().end_time, 200);
+
+    let mut value_count = 0;
+    reader
+        .read_signals(&FstFilter::all(), |_, _, _| value_count += 1)
+        .unwrap();
+    assert_eq!(value_count, 63); // golden value from libfst
+}
+
+/// Test incomplete FST with 3 data sections reports correct end_time.
+#[test]
+fn test_multi_section_end_time_3sections() {
+    let fst = std::fs::File::open("fsts/partial/minimal_3sections.fst").unwrap();
+    let hier = std::fs::File::open("fsts/partial/minimal_3sections.fst.hier").unwrap();
+    let mut reader = FstReader::open_incomplete(
+        std::io::BufReader::new(fst),
+        std::io::BufReader::new(hier),
+    )
+    .unwrap();
+
+    assert_eq!(reader.get_header().end_time, 300);
+
+    let mut value_count = 0;
+    reader
+        .read_signals(&FstFilter::all(), |_, _, _| value_count += 1)
+        .unwrap();
+    assert_eq!(value_count, 93); // golden value from libfst
+}

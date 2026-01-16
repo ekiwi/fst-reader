@@ -452,6 +452,7 @@ struct HeaderReader<R: Read + Seek> {
     float_endian: FloatingPointEndian,
     hierarchy: Option<(HierarchyCompression, u64)>,
     time_table: Option<Vec<u64>>,
+    is_incomplete: bool,
 }
 
 impl<R: Read + Seek> HeaderReader<R> {
@@ -465,6 +466,7 @@ impl<R: Read + Seek> HeaderReader<R> {
             float_endian: FloatingPointEndian::Little,
             hierarchy: None,
             time_table: None,
+            is_incomplete: false,
         }
     }
 
@@ -501,17 +503,15 @@ impl<R: Read + Seek> HeaderReader<R> {
 
         // incomplete fst files may have start_time and end_time set to 0,
         // in which case we can infer it from the data
-        if let Some(Header {
-            start_time: header_start,
-            end_time: header_end,
-            ..
-        }) = self.header.as_mut()
-            && *header_start == 0
-            && *header_end == 0
-        {
-            *header_end = end_time;
+        if let Some(header) = self.header.as_mut() {
             if self.data_sections.is_empty() {
-                *header_start = start_time;
+                self.is_incomplete = header.start_time == 0 && header.end_time == 0;
+                if self.is_incomplete {
+                    header.start_time = start_time;
+                }
+            }
+            if self.is_incomplete {
+                header.end_time = end_time;
             }
         }
 

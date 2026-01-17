@@ -168,3 +168,54 @@ fn test_multi_section_end_time_3sections() {
         .unwrap();
     assert_eq!(value_count, 93); // golden value from libfst
 }
+
+/// Test truncated 3-section FST reads 2 complete blocks before hitting truncated 3rd block.
+#[test]
+fn test_truncated_3sections_reads_2_blocks() {
+    let fst = std::fs::File::open("fsts/partial/truncated_3sections.fst").unwrap();
+    let hier = std::fs::File::open("fsts/partial/truncated_3sections.fst.hier").unwrap();
+    let mut reader = FstReader::open_incomplete(
+        std::io::BufReader::new(fst),
+        std::io::BufReader::new(hier),
+    )
+    .unwrap();
+
+    assert_eq!(reader.get_header().end_time, 300);
+
+    let mut value_count = 0;
+    let result = reader.read_signals(&FstFilter::all(), |_, _, _| value_count += 1);
+
+    assert!(
+        matches!(&result, Err(ReaderError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        "Expected UnexpectedEof from truncated block, got: {:?}",
+        result
+    );
+    assert_eq!(value_count, 63);
+}
+
+/// Test that Real signals are correctly identified when using open_incomplete().
+/// Regression test for bug where reconstruct_geometry() used length instead of type.
+#[test]
+fn test_incomplete_real_signal_type() {
+    let fst = std::fs::File::open("fsts/partial/real_signal.fst").unwrap();
+    let hier = std::fs::File::open("fsts/partial/real_signal.fst.hier").unwrap();
+    let mut reader = FstReader::open_incomplete(
+        std::io::BufReader::new(fst),
+        std::io::BufReader::new(hier),
+    )
+    .unwrap();
+
+    reader.read_hierarchy(|_| {}).unwrap();
+
+    let mut real_count = 0;
+    let mut string_count = 0;
+    reader
+        .read_signals(&FstFilter::all(), |_, _, value| match value {
+            FstSignalValue::Real(_) => real_count += 1,
+            FstSignalValue::String(_) => string_count += 1,
+        })
+        .unwrap();
+
+    assert_eq!(real_count, 10); // 10 Real signal changes
+    assert_eq!(string_count, 10); // 10 BitVec signal changes (not Real)
+}

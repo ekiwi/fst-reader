@@ -134,11 +134,9 @@ fn load_long_hierarchy_name() {
 fn test_multi_section_end_time_2sections() {
     let fst = std::fs::File::open("fsts/partial/minimal_2sections.fst").unwrap();
     let hier = std::fs::File::open("fsts/partial/minimal_2sections.fst.hier").unwrap();
-    let mut reader = FstReader::open_incomplete(
-        std::io::BufReader::new(fst),
-        std::io::BufReader::new(hier),
-    )
-    .unwrap();
+    let mut reader =
+        FstReader::open_incomplete(std::io::BufReader::new(fst), std::io::BufReader::new(hier))
+            .unwrap();
 
     assert_eq!(reader.get_header().end_time, 200);
 
@@ -154,11 +152,9 @@ fn test_multi_section_end_time_2sections() {
 fn test_multi_section_end_time_3sections() {
     let fst = std::fs::File::open("fsts/partial/minimal_3sections.fst").unwrap();
     let hier = std::fs::File::open("fsts/partial/minimal_3sections.fst.hier").unwrap();
-    let mut reader = FstReader::open_incomplete(
-        std::io::BufReader::new(fst),
-        std::io::BufReader::new(hier),
-    )
-    .unwrap();
+    let mut reader =
+        FstReader::open_incomplete(std::io::BufReader::new(fst), std::io::BufReader::new(hier))
+            .unwrap();
 
     assert_eq!(reader.get_header().end_time, 300);
 
@@ -174,11 +170,9 @@ fn test_multi_section_end_time_3sections() {
 fn test_truncated_3sections_reads_2_blocks() {
     let fst = std::fs::File::open("fsts/partial/truncated_3sections.fst").unwrap();
     let hier = std::fs::File::open("fsts/partial/truncated_3sections.fst.hier").unwrap();
-    let mut reader = FstReader::open_incomplete(
-        std::io::BufReader::new(fst),
-        std::io::BufReader::new(hier),
-    )
-    .unwrap();
+    let mut reader =
+        FstReader::open_incomplete(std::io::BufReader::new(fst), std::io::BufReader::new(hier))
+            .unwrap();
 
     assert_eq!(reader.get_header().end_time, 300);
 
@@ -199,11 +193,9 @@ fn test_truncated_3sections_reads_2_blocks() {
 fn test_incomplete_real_signal_type() {
     let fst = std::fs::File::open("fsts/partial/real_signal.fst").unwrap();
     let hier = std::fs::File::open("fsts/partial/real_signal.fst.hier").unwrap();
-    let mut reader = FstReader::open_incomplete(
-        std::io::BufReader::new(fst),
-        std::io::BufReader::new(hier),
-    )
-    .unwrap();
+    let mut reader =
+        FstReader::open_incomplete(std::io::BufReader::new(fst), std::io::BufReader::new(hier))
+            .unwrap();
 
     reader.read_hierarchy(|_| {}).unwrap();
 

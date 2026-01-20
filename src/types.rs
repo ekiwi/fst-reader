@@ -148,6 +148,19 @@ pub enum FstVarType {
     ShortReal = 29,
 }
 
+impl FstVarType {
+    /// Returns `true` iff this is a Real, RealParameter, RealTime or ShortReal.
+    pub fn is_real(&self) -> bool {
+        matches!(
+            self,
+            FstVarType::Real
+                | FstVarType::RealParameter
+                | FstVarType::RealTime
+                | FstVarType::ShortReal
+        )
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]

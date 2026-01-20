@@ -549,15 +549,17 @@ impl<R: Read + Seek> HeaderReader<R> {
         while let Some(entry) = read_hierarchy_entry(&mut input, &mut handle_count)? {
             match entry {
                 FstHierarchyEntry::Var {
-                    tpe, length, is_alias, ..
+                    tpe,
+                    length,
+                    is_alias,
+                    ..
                 } if !is_alias => {
                     // Check variable type to correctly identify Real signals
                     // (length alone is not sufficient - Real signals have length=64 but should be SignalInfo::Real)
-                    let signal_info = match tpe {
-                        FstVarType::Real | FstVarType::RealParameter | FstVarType::RealTime | FstVarType::ShortReal => {
-                            SignalInfo::Real
-                        }
-                        _ => SignalInfo::from_file_format(length),
+                    let signal_info = if tpe.is_real() {
+                        SignalInfo::Real
+                    } else {
+                        SignalInfo::from_file_format(length)
                     };
                     signals.push(signal_info);
                 }

@@ -44,8 +44,8 @@ fn fst_sys_load_hierarchy(handle: *mut c_void) -> VecDeque<String> {
     out
 }
 
-unsafe fn fst_sys_hierarchy_read_name(ptr: *const c_char, len: u32) -> String {
-    let slic = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+fn fst_sys_hierarchy_read_name(ptr: *const c_char, len: u32) -> String {
+    let slic = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
     (std::str::from_utf8(slic)).unwrap().to_string()
 }
 
@@ -78,7 +78,7 @@ fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
     con.to_string()
 }
 
-unsafe fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) -> String {
+fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) -> String {
     let name = fst_sys_hierarchy_read_name(attr.name, attr.name_length);
     match attr.typ as fst_sys::fstAttrType {
         fst_sys::fstAttrType_FST_AT_MISC => {

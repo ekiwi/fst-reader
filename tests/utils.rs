@@ -81,6 +81,7 @@ fn hierarchy_tpe_to_str(tpe: &FstScopeType) -> String {
         FstScopeType::AttributeEnd => "AttributeEnd",
         FstScopeType::VcdScope => "VcdScope",
         FstScopeType::VcdUpScope => "VcdUpScope",
+        FstScopeType::SvArray => "SvArray",
     };
     con.to_string()
 }

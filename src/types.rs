@@ -102,6 +102,8 @@ pub enum FstScopeType {
     VhdlIfGenerate = 19,
     VhdlGenerate = 20,
     VhdlPackage = 21,
+    // SystemVerilog
+    SvArray = 22,
     //
     AttributeBegin = 252,
     AttributeEnd = 253,

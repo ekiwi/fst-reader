@@ -902,9 +902,10 @@ pub(crate) fn read_hierarchy_entry(
         }
         HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN => {
             let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
-            let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
+            let subtype_byte = read_u8(input)?;
             match tpe {
                 AttributeType::Misc => {
+                    let subtype = MiscType::try_from_primitive(subtype_byte)?;
                     let (name, arg2) = match subtype {
                         MiscType::SourceStem | MiscType::SourceInstantiationStem => {
                             let arg2 = read_hierarchy_attribute_arg2_encoded_as_name(input)?;
@@ -918,9 +919,17 @@ pub(crate) fn read_hierarchy_entry(
                     let (arg, _) = read_variant_u64(input)?;
                     parse_misc_attribute(name, subtype, arg, arg2)?
                 }
-                AttributeType::Array => todo!("ARRAY attributes"),
-                AttributeType::Enum => todo!("ENUM attributes"),
-                AttributeType::Pack => todo!("PACK attributes"),
+                AttributeType::Array | AttributeType::Enum | AttributeType::Pack => {
+                    // These attribute types use the same wire format as Misc
+                    // (name c-string + varint arg) but the subtype byte represents
+                    // a different enum for each (ArrayType, EnumValueType, PackType).
+                    // GTKWave's own reader ignores non-Misc attributes, and wellen
+                    // deduces array/enum/pack structure from other sources, so we
+                    // just consume the data to keep the reader in sync.
+                    let _name = read_c_str(input, HIERARCHY_ATTRIBUTE_MAX_SIZE)?;
+                    let (_arg, _) = read_variant_u64(input)?;
+                    FstHierarchyEntry::AttributeEnd
+                }
             }
         }
         HIERARCHY_TPE_VCD_ATTRIBUTE_END => {
@@ -1844,5 +1853,42 @@ mod tests {
         fn test_prop_read_write_time_table(table: Vec<u64>, compressed: bool) {
             read_write_time_table(table, compressed);
         }
+    }
+
+    /// Writes a raw attribute entry with the given AttributeType, subtype byte,
+    /// name, and arg, then reads it back via read_hierarchy_entry.
+    fn read_non_misc_attribute(tpe: AttributeType, subtype: u8, name: &str, arg: u64) {
+        let mut buf = std::io::Cursor::new(vec![0u8; 1024]);
+        // write raw bytes: entry type, attribute type, subtype, name (null-terminated), varint arg
+        write_u8(&mut buf, HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN).unwrap();
+        write_u8(&mut buf, tpe as u8).unwrap();
+        write_u8(&mut buf, subtype).unwrap();
+        buf.write_all(name.as_bytes()).unwrap();
+        write_u8(&mut buf, 0).unwrap(); // null terminator
+        write_variant_u64(&mut buf, arg).unwrap();
+        buf.seek(SeekFrom::Start(0)).unwrap();
+        let mut handle_count = 0u32;
+        let entry = read_hierarchy_entry(&mut buf, &mut handle_count)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry, FstHierarchyEntry::AttributeEnd);
+    }
+
+    #[test]
+    fn test_read_array_attribute() {
+        // subtype 1 = Unpacked in GTKWave's FST_AR_* enum
+        read_non_misc_attribute(AttributeType::Array, 1, "my_array", 42);
+    }
+
+    #[test]
+    fn test_read_enum_attribute() {
+        // subtype 0 = SV_INTEGER in GTKWave's FST_EV_* enum
+        read_non_misc_attribute(AttributeType::Enum, 0, "my_enum", 7);
+    }
+
+    #[test]
+    fn test_read_pack_attribute() {
+        // subtype 2 = Packed in GTKWave's FST_PT_* enum
+        read_non_misc_attribute(AttributeType::Pack, 2, "my_struct", 0);
     }
 }

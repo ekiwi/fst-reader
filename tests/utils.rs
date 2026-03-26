@@ -50,6 +50,28 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
         } => {
             format!("VHDL Var Info: {type_name}, {var_type:?}, {data_type:?}")
         }
+        FstHierarchyEntry::Array {
+            name,
+            array_type,
+            left,
+            right,
+        } => {
+            format!("Array: {name} {array_type:?} [{left}:{right}]")
+        }
+        FstHierarchyEntry::Pack {
+            name,
+            pack_type,
+            value,
+        } => {
+            format!("Pack: {name} {pack_type:?} {value}")
+        }
+        FstHierarchyEntry::SVEnum {
+            name,
+            enum_type,
+            value,
+        } => {
+            format!("SVEnum: {name} {enum_type:?} {value}")
+        }
     }
 }
 

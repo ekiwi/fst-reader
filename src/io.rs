@@ -60,6 +60,12 @@ pub enum ReaderError {
     AttributeType(#[from] TryFromPrimitiveError<AttributeType>),
     #[error("Unexpected misc attribute type")]
     MiscType(#[from] TryFromPrimitiveError<MiscType>),
+    #[error("Unexpected array type")]
+    ArrayType(#[from] TryFromPrimitiveError<ArrayType>),
+    #[error("Unexpected sv enum type")]
+    EnumType(#[from] TryFromPrimitiveError<EnumType>),
+    #[error("Unexpected pack type")]
+    PackType(#[from] TryFromPrimitiveError<PackType>),
     #[error("The FST file is incomplete: geometry block is missing.")]
     MissingGeometry(),
     #[error("The FST file is incomplete: hierarchy block is missing.")]
@@ -902,9 +908,9 @@ pub(crate) fn read_hierarchy_entry(
         }
         HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN => {
             let tpe = AttributeType::try_from_primitive(read_u8(input)?)?;
-            let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
             match tpe {
                 AttributeType::Misc => {
+                    let subtype = MiscType::try_from_primitive(read_u8(input)?)?;
                     let (name, arg2) = match subtype {
                         MiscType::SourceStem | MiscType::SourceInstantiationStem => {
                             let arg2 = read_hierarchy_attribute_arg2_encoded_as_name(input)?;
@@ -918,9 +924,41 @@ pub(crate) fn read_hierarchy_entry(
                     let (arg, _) = read_variant_u64(input)?;
                     parse_misc_attribute(name, subtype, arg, arg2)?
                 }
-                AttributeType::Array => todo!("ARRAY attributes"),
-                AttributeType::Enum => todo!("ENUM attributes"),
-                AttributeType::Pack => todo!("PACK attributes"),
+                AttributeType::Array => {
+                    let array_type = ArrayType::try_from_primitive(read_u8(input)?)?;
+                    let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+                    let (left_right, _) = read_variant_u64(input)?;
+                    let left = ((left_right >> 32) & 0xFFFFFFFF) as i32;
+                    let right = (left_right & 0xFFFFFFFF) as i32;
+                    FstHierarchyEntry::Array {
+                        name,
+                        array_type,
+                        left,
+                        right,
+                    }
+                }
+                AttributeType::Enum => {
+                    let enum_type = EnumType::try_from_primitive(read_u8(input)?)?;
+                    let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+                    let (value, _) = read_variant_u64(input)?;
+
+                    FstHierarchyEntry::SVEnum {
+                        name,
+                        enum_type,
+                        value,
+                    }
+                }
+                AttributeType::Pack => {
+                    let pack_type = PackType::try_from_primitive(read_u8(input)?)?;
+                    let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
+                    let (value, _) = read_variant_u64(input)?;
+
+                    FstHierarchyEntry::Pack {
+                        name,
+                        pack_type,
+                        value,
+                    }
+                }
             }
         }
         HIERARCHY_TPE_VCD_ATTRIBUTE_END => {
@@ -938,14 +976,14 @@ pub(crate) fn read_hierarchy_entry(
 fn write_hierarchy_attribute(
     output: &mut impl Write,
     tpe: AttributeType,
-    subtype: MiscType,
+    subtype: u8,
     name: &str,
     arg: u64,
     arg2: Option<u64>,
 ) -> WriteResult<()> {
     write_u8(output, HIERARCHY_TPE_VCD_ATTRIBUTE_BEGIN)?;
     write_u8(output, tpe as u8)?;
-    write_u8(output, subtype as u8)?;
+    write_u8(output, subtype)?;
     let raw_name_bytes = match arg2 {
         None => {
             assert!(name.len() <= HIERARCHY_ATTRIBUTE_MAX_SIZE);
@@ -1019,7 +1057,7 @@ pub(crate) fn write_hierarchy_entry(
         FstHierarchyEntry::PathName { name, id } => write_hierarchy_attribute(
             output,
             AttributeType::Misc,
-            MiscType::PathName,
+            MiscType::PathName as u8,
             name,
             *id,
             None,
@@ -1037,7 +1075,7 @@ pub(crate) fn write_hierarchy_entry(
             write_hierarchy_attribute(
                 output,
                 AttributeType::Misc,
-                subtpe,
+                subtpe as u8,
                 "",
                 *line,
                 Some(*path_id),
@@ -1046,7 +1084,7 @@ pub(crate) fn write_hierarchy_entry(
         FstHierarchyEntry::Comment { string } => write_hierarchy_attribute(
             output,
             AttributeType::Misc,
-            MiscType::Comment,
+            MiscType::Comment as u8,
             string,
             0,
             None,
@@ -1060,7 +1098,7 @@ pub(crate) fn write_hierarchy_entry(
             write_hierarchy_attribute(
                 output,
                 AttributeType::Misc,
-                MiscType::EnumTable,
+                MiscType::EnumTable as u8,
                 &table_str,
                 *handle,
                 None,
@@ -1069,7 +1107,7 @@ pub(crate) fn write_hierarchy_entry(
         FstHierarchyEntry::EnumTableRef { handle } => write_hierarchy_attribute(
             output,
             AttributeType::Misc,
-            MiscType::EnumTable,
+            MiscType::EnumTable as u8,
             "",
             *handle,
             None,
@@ -1083,9 +1121,53 @@ pub(crate) fn write_hierarchy_entry(
             write_hierarchy_attribute(
                 output,
                 AttributeType::Misc,
-                MiscType::SupVar,
+                MiscType::SupVar as u8,
                 type_name,
                 arg,
+                None,
+            )?;
+        }
+        FstHierarchyEntry::Array {
+            name,
+            array_type,
+            left,
+            right,
+        } => {
+            let arg = (((*left) as u64) << 32) | ((*right as u64) & 0xFFFFFFFF);
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Array,
+                *array_type as u8,
+                name,
+                arg,
+                None,
+            )?;
+        }
+        FstHierarchyEntry::SVEnum {
+            name,
+            enum_type,
+            value,
+        } => {
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Enum,
+                *enum_type as u8,
+                name,
+                *value,
+                None,
+            )?;
+        }
+        FstHierarchyEntry::Pack {
+            name,
+            pack_type,
+            value,
+        } => {
+            write_hierarchy_attribute(
+                output,
+                AttributeType::Pack,
+                *pack_type as u8,
+                name,
+                *value,
                 None,
             )?;
         }
@@ -1696,6 +1778,9 @@ mod tests {
             FstHierarchyEntry::VhdlVarInfo { type_name, .. } => {
                 is_valid_c_str(type_name, HIERARCHY_NAME_MAX_SIZE)
             }
+            FstHierarchyEntry::Array { name, .. } => is_valid_c_str(name, HIERARCHY_NAME_MAX_SIZE),
+            FstHierarchyEntry::SVEnum { name, .. } => is_valid_c_str(name, HIERARCHY_NAME_MAX_SIZE),
+            FstHierarchyEntry::Pack { name, .. } => is_valid_c_str(name, HIERARCHY_NAME_MAX_SIZE),
             FstHierarchyEntry::AttributeEnd => true,
         }
     }

@@ -220,6 +220,48 @@ pub enum AttributeType {
 }
 
 #[repr(u8)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub enum PackType {
+    None = 0,
+    Packed = 1,
+    Unpacked = 2,
+    TaggedPacked = 3,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub enum EnumType {
+    Integer = 0,
+    Bit = 1,
+    Logic = 2,
+    Int = 3,
+    ShortInt = 4,
+    LongInt = 5,
+    Byte = 6,
+    UnsignedInteger = 7,
+    UnsignedBit = 8,
+    UnsignedLogic = 9,
+    UnsignedInt = 10,
+    UnsignedShortInt = 11,
+    UnsignedLongInt = 12,
+    UnsignedByte = 13,
+    Reg = 14,
+    Time = 15,
+}
+
+#[repr(u8)]
+#[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Arbitrary))]
+pub enum ArrayType {
+    None = 0,
+    Packed = 1,
+    Unpacked = 2,
+    Sparse = 3,
+}
+
+#[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
 pub enum MiscType {
     Comment = 0,
@@ -359,6 +401,22 @@ pub enum FstHierarchyEntry {
         type_name: String,
         var_type: FstVhdlVarType,
         data_type: FstVhdlDataType,
+    },
+    Array {
+        name: String,
+        array_type: ArrayType,
+        left: i32,
+        right: i32,
+    },
+    Pack {
+        name: String,
+        pack_type: PackType,
+        value: u64,
+    },
+    SVEnum {
+        name: String,
+        enum_type: EnumType,
+        value: u64,
     },
     AttributeEnd,
 }

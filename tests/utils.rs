@@ -56,7 +56,8 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
             left,
             right,
         } => {
-            format!("Array: {name} {array_type:?} [{left}:{right}]")
+            let combined = ((*left as u64) << 32) | (*right as u64);
+            format!("Array: {name} {array_type:?} {combined}")
         }
         FstHierarchyEntry::Pack {
             name,

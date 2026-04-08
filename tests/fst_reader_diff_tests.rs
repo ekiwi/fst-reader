@@ -49,6 +49,9 @@ fn fst_sys_hierarchy_read_name(ptr: *const c_char, len: u32) -> String {
     (std::str::from_utf8(slic)).unwrap().to_string()
 }
 
+/// This constant has not been integrated with the fst sys library yet.
+const FST_ST_SV_ARRAY: fst_sys::fstScopeType = 22;
+
 fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
     let con = match tpe {
         fst_sys::fstScopeType_FST_ST_VCD_MODULE => "Module",
@@ -73,6 +76,7 @@ fn fst_sys_scope_tpe_to_string(tpe: fst_sys::fstScopeType) -> String {
         fst_sys::fstScopeType_FST_ST_VHDL_IF_GENERATE => "VhdlIfGenerate",
         fst_sys::fstScopeType_FST_ST_VHDL_GENERATE => "VhdlGenerate",
         fst_sys::fstScopeType_FST_ST_VHDL_PACKAGE => "VhdlPackage",
+        FST_ST_SV_ARRAY => "SvArray",
         other => todo!("scope type: {other}"),
     };
     con.to_string()
@@ -118,6 +122,16 @@ fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) ->
                 }
                 other => todo!("misc attribute of subtype {other}"),
             }
+        }
+        fst_sys::fstAttrType_FST_AT_ARRAY => {
+            let kind = match attr.subtype as fst_sys::fstArrayType {
+                fst_sys::fstArrayType_FST_AR_NONE => "None",
+                fst_sys::fstArrayType_FST_AR_UNPACKED => "Unpacked",
+                fst_sys::fstArrayType_FST_AR_PACKED => "Packed",
+                fst_sys::fstArrayType_FST_AR_SPARSE => "Sparse",
+                _ => todo!("implement new array type"),
+            };
+            format!("Array: {name} {kind} {}", attr.arg)
         }
         _ => format!("BeginAttr: {name}"),
     }
@@ -576,6 +590,18 @@ fn diff_verilator_basic_test() {
 #[test]
 fn diff_verilator_many_sv_data_types() {
     run_diff_test("fsts/verilator/many_sv_datatypes.fst", &FstFilter::all());
+}
+
+/// Verilator started using new FST attributes after this PR:
+/// https://github.com/verilator/verilator/pull/7255
+/// Michael Rogenmoser provided the FST for testing:
+/// https://github.com/ekiwi/fst-reader/pull/24
+#[test]
+fn diff_verilator_new_attributes() {
+    run_diff_test(
+        "fsts/verilator/new_attributes_pull_24.fst",
+        &FstFilter::all(),
+    );
 }
 
 // FST reported in https://gitlab.com/surfer-project/surfer/-/issues/201

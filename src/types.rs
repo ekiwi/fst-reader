@@ -1,5 +1,5 @@
 // Copyright 2023 The Regents of the University of California
-// Copyright 2024 Cornell University
+// Copyright 2024-2026 Cornell University
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@cornell.edu>
 // Contains FST in-memory types.
@@ -222,7 +222,7 @@ pub enum AttributeType {
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
-pub enum PackType {
+pub enum FstPackType {
     None = 0,
     Unpacked = 1,
     Packed = 2,
@@ -232,7 +232,7 @@ pub enum PackType {
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
-pub enum EnumType {
+pub enum FstEnumType {
     Integer = 0,
     Bit = 1,
     Logic = 2,
@@ -254,7 +254,7 @@ pub enum EnumType {
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Arbitrary))]
-pub enum ArrayType {
+pub enum FstArrayType {
     None = 0,
     Unpacked = 1,
     Packed = 2,
@@ -404,18 +404,18 @@ pub enum FstHierarchyEntry {
     },
     Array {
         name: String,
-        array_type: ArrayType,
+        array_type: FstArrayType,
         left: i32,
         right: i32,
     },
     Pack {
         name: String,
-        pack_type: PackType,
+        pack_type: FstPackType,
         value: u64,
     },
     SVEnum {
         name: String,
-        enum_type: EnumType,
+        enum_type: FstEnumType,
         value: u64,
     },
     AttributeEnd,

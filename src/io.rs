@@ -1,5 +1,5 @@
 // Copyright 2023 The Regents of the University of California
-// Copyright 2024 Cornell University
+// Copyright 2024-2026 Cornell University
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@cornell.edu>
 // Contains basic read and write operations for FST files.
@@ -61,11 +61,11 @@ pub enum ReaderError {
     #[error("Unexpected misc attribute type")]
     MiscType(#[from] TryFromPrimitiveError<MiscType>),
     #[error("Unexpected array type")]
-    ArrayType(#[from] TryFromPrimitiveError<ArrayType>),
+    ArrayType(#[from] TryFromPrimitiveError<FstArrayType>),
     #[error("Unexpected sv enum type")]
-    EnumType(#[from] TryFromPrimitiveError<EnumType>),
+    EnumType(#[from] TryFromPrimitiveError<FstEnumType>),
     #[error("Unexpected pack type")]
-    PackType(#[from] TryFromPrimitiveError<PackType>),
+    PackType(#[from] TryFromPrimitiveError<FstPackType>),
     #[error("The FST file is incomplete: geometry block is missing.")]
     MissingGeometry(),
     #[error("The FST file is incomplete: hierarchy block is missing.")]
@@ -925,7 +925,7 @@ pub(crate) fn read_hierarchy_entry(
                     parse_misc_attribute(name, subtype, arg, arg2)?
                 }
                 AttributeType::Array => {
-                    let array_type = ArrayType::try_from_primitive(read_u8(input)?)?;
+                    let array_type = FstArrayType::try_from_primitive(read_u8(input)?)?;
                     let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
                     let (left_right, _) = read_variant_u64(input)?;
                     let mask32 = u32::MAX as u64;
@@ -939,7 +939,7 @@ pub(crate) fn read_hierarchy_entry(
                     }
                 }
                 AttributeType::Enum => {
-                    let enum_type = EnumType::try_from_primitive(read_u8(input)?)?;
+                    let enum_type = FstEnumType::try_from_primitive(read_u8(input)?)?;
                     let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
                     let (value, _) = read_variant_u64(input)?;
 
@@ -950,7 +950,7 @@ pub(crate) fn read_hierarchy_entry(
                     }
                 }
                 AttributeType::Pack => {
-                    let pack_type = PackType::try_from_primitive(read_u8(input)?)?;
+                    let pack_type = FstPackType::try_from_primitive(read_u8(input)?)?;
                     let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
                     let (value, _) = read_variant_u64(input)?;
 

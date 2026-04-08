@@ -928,8 +928,9 @@ pub(crate) fn read_hierarchy_entry(
                     let array_type = ArrayType::try_from_primitive(read_u8(input)?)?;
                     let name = read_c_str(input, HIERARCHY_NAME_MAX_SIZE)?;
                     let (left_right, _) = read_variant_u64(input)?;
-                    let left = ((left_right >> 32) & 0xFFFFFFFF) as i32;
-                    let right = (left_right & 0xFFFFFFFF) as i32;
+                    let mask32 = u32::MAX as u64;
+                    let left = ((left_right >> 32) & mask32) as i32;
+                    let right = (left_right & mask32) as i32;
                     FstHierarchyEntry::Array {
                         name,
                         array_type,

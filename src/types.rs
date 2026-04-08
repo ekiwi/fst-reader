@@ -256,8 +256,8 @@ pub enum EnumType {
 #[cfg_attr(test, derive(Arbitrary))]
 pub enum ArrayType {
     None = 0,
-    Packed = 1,
-    Unpacked = 2,
+    Unpacked = 1,
+    Packed = 2,
     Sparse = 3,
 }
 

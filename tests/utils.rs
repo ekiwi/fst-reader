@@ -57,21 +57,21 @@ pub fn hierarchy_to_str(entry: &FstHierarchyEntry) -> String {
             right,
         } => {
             let combined = ((*left as u64) << 32) | (*right as u64);
-            format!("Array: {name} {array_type:?} {combined}")
+            format!("Array: {array_type:?} {name}: {combined}")
         }
         FstHierarchyEntry::Pack {
             name,
             pack_type,
             value,
         } => {
-            format!("Pack: {name} {pack_type:?} {value}")
+            format!("{pack_type:?} {name}: {value}")
         }
         FstHierarchyEntry::SVEnum {
             name,
             enum_type,
             value,
         } => {
-            format!("SVEnum: {name} {enum_type:?} {value}")
+            format!("SVEnum: {enum_type:?} {name}: {value}")
         }
     }
 }

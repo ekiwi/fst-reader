@@ -131,7 +131,20 @@ fn fst_sys_parse_attribute(attr: &fst_sys::fstHier__bindgen_ty_1_fstHierAttr) ->
                 fst_sys::fstArrayType_FST_AR_SPARSE => "Sparse",
                 _ => todo!("implement new array type"),
             };
-            format!("Array: {name} {kind} {}", attr.arg)
+            format!("Array: {kind} {name}: {}", attr.arg)
+        }
+        fst_sys::fstAttrType_FST_AT_ENUM => {
+            todo!("enum attr")
+        }
+        fst_sys::fstAttrType_FST_AT_PACK => {
+            let kind = match attr.subtype as fst_sys::fstPackType {
+                fst_sys::fstPackType_FST_PT_NONE => "None",
+                fst_sys::fstPackType_FST_PT_UNPACKED => "Unpacked",
+                fst_sys::fstPackType_FST_PT_PACKED => "Packed",
+                fst_sys::fstPackType_FST_PT_TAGGED_PACKED => "TaggedPacked",
+                _ => todo!("implement new pack type"),
+            };
+            format!("{kind} {name}: {}", attr.arg)
         }
         _ => format!("BeginAttr: {name}"),
     }
@@ -613,6 +626,15 @@ fn diff_verilator_surfer_issue_201() {
 #[test]
 fn diff_verilator_swerv1() {
     run_diff_test("fsts/verilator/swerv1.vcd.fst", &FstFilter::all());
+}
+
+/// src: https://github.com/verilator/verilator/pull/7255#issuecomment-4055440626
+#[test]
+fn diff_verilator_pull_7255() {
+    run_diff_test(
+        "fsts/verilator/verilator-pull-7255-t_trace_complex_structs_cc_fst.fst",
+        &FstFilter::all(),
+    );
 }
 
 #[test]

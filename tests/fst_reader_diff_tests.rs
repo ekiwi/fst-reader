@@ -339,7 +339,7 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
     // open file with our library
     let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
     let our_reader = FstReader::open_and_read_time_table(std::io::BufReader::new(our_f)).unwrap();
-    run_diff_test_internal(our_reader, exp_handle, filter);
+    run_diff_test_internal(our_reader, exp_handle, filter, false);
 
     // close C-library handle
     unsafe { fst_sys::fstReaderClose(exp_handle) };
@@ -357,7 +357,7 @@ fn run_incomplete_diff_test(filename: &str, hierarchy: &str, filter: &FstFilter)
         std::io::BufReader::new(our_h),
     )
     .unwrap();
-    run_diff_test_internal(our_reader, exp_handle, filter);
+    run_diff_test_internal(our_reader, exp_handle, filter, true);
 
     // close C-library handle
     unsafe { fst_sys::fstReaderClose(exp_handle) };
@@ -367,6 +367,7 @@ fn run_diff_test_internal<R: std::io::BufRead + std::io::Seek>(
     mut our_reader: FstReader<R>,
     exp_handle: *mut c_void,
     _filter: &FstFilter,
+    is_incomplete: bool,
 ) {
     // compare header
     let exp_header = fst_sys_load_header(exp_handle);
@@ -378,23 +379,29 @@ fn run_diff_test_internal<R: std::io::BufRead + std::io::Seek>(
     let is_real = diff_hierarchy(&mut our_reader, exp_hierarchy);
 
     // check that time table is strictly increasing
-    let our_time_table = our_reader.get_time_table().unwrap();
-    if let Some(not_increasing_pos) = is_strictly_increasing(our_time_table) {
-        panic!(
-            "Time table is not increasing around {not_increasing_pos}!\n[...{}, {}, {}...]",
-            our_time_table
-                .get(not_increasing_pos - 1)
-                .map(|t| format!("{t}"))
-                .unwrap_or("n/a".to_string()),
-            our_time_table
-                .get(not_increasing_pos)
-                .map(|t| format!("{t}"))
-                .unwrap_or("n/a".to_string()),
-            our_time_table
-                .get(not_increasing_pos + 1)
-                .map(|t| format!("{t}"))
-                .unwrap_or("n/a".to_string()),
-        );
+    if let Some(our_time_table) = our_reader.get_time_table() {
+        if let Some(not_increasing_pos) = is_strictly_increasing(our_time_table) {
+            panic!(
+                "Time table is not increasing around {not_increasing_pos}!\n[...{}, {}, {}...]",
+                our_time_table
+                    .get(not_increasing_pos - 1)
+                    .map(|t| format!("{t}"))
+                    .unwrap_or("n/a".to_string()),
+                our_time_table
+                    .get(not_increasing_pos)
+                    .map(|t| format!("{t}"))
+                    .unwrap_or("n/a".to_string()),
+                our_time_table
+                    .get(not_increasing_pos + 1)
+                    .map(|t| format!("{t}"))
+                    .unwrap_or("n/a".to_string()),
+            );
+        }
+    } else {
+        assert!(
+            is_incomplete,
+            "Only incomplete FSTs are expected to not have a time table"
+        )
     }
 
     // compare signals
@@ -431,6 +438,7 @@ fn diff_fst_writer_simple() {
 }
 
 #[test]
+#[ignore] // the file is ill-formed!
 fn diff_fst_writer_multi_vc_block() {
     run_diff_test("fsts/fst-writer/multi_vc_block.fst", &FstFilter::all());
 }

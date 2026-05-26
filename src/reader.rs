@@ -487,7 +487,6 @@ impl<R: Read + Seek> HeaderReader<R> {
                 let is_first_section = table.is_empty();
                 if is_first_section && time_chain[0] > start_time {
                     table.push(start_time);
-                    println!("push({start_time})");
                 }
 
                 // NVC has duplicate time entries at the end of a block sometimes

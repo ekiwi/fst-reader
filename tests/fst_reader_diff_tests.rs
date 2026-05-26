@@ -338,7 +338,7 @@ fn run_diff_test(filename: &str, filter: &FstFilter) {
 
     // open file with our library
     let our_f = File::open(filename).unwrap_or_else(|_| panic!("Failed to open {}", filename));
-    let our_reader = FstReader::open(std::io::BufReader::new(our_f)).unwrap();
+    let our_reader = FstReader::open_and_read_time_table(std::io::BufReader::new(our_f)).unwrap();
     run_diff_test_internal(our_reader, exp_handle, filter);
 
     // close C-library handle
@@ -377,9 +377,42 @@ fn run_diff_test_internal<R: std::io::BufRead + std::io::Seek>(
     let exp_hierarchy = fst_sys_load_hierarchy(exp_handle);
     let is_real = diff_hierarchy(&mut our_reader, exp_hierarchy);
 
+    // check that time table is strictly increasing
+    let our_time_table = our_reader.get_time_table().unwrap();
+    if let Some(not_increasing_pos) = is_strictly_increasing(our_time_table) {
+        panic!(
+            "Time table is not increasing around {not_increasing_pos}!\n[...{}, {}, {}...]",
+            our_time_table
+                .get(not_increasing_pos - 1)
+                .map(|t| format!("{t}"))
+                .unwrap_or("n/a".to_string()),
+            our_time_table
+                .get(not_increasing_pos)
+                .map(|t| format!("{t}"))
+                .unwrap_or("n/a".to_string()),
+            our_time_table
+                .get(not_increasing_pos + 1)
+                .map(|t| format!("{t}"))
+                .unwrap_or("n/a".to_string()),
+        );
+    }
+
     // compare signals
     let exp_signals = fst_sys_load_signals(exp_handle, &is_real);
     diff_signals(&mut our_reader, exp_signals);
+}
+
+fn is_strictly_increasing(tt: &[u64]) -> Option<usize> {
+    let mut prev = None;
+    for (ii, time_idx) in tt.iter().enumerate() {
+        if let Some(prev) = prev
+            && prev >= *time_idx
+        {
+            return Some(ii);
+        }
+        prev = Some(*time_idx);
+    }
+    None
 }
 
 #[test]
@@ -498,6 +531,11 @@ fn diff_my_hdl_top() {
 #[test]
 fn diff_ncsim_ffdiv() {
     run_diff_test("fsts/ncsim/ffdiv_32bit_tb.vcd.fst", &FstFilter::all());
+}
+
+#[test]
+fn diff_nvc_overlay_tb_wellen_issue_21() {
+    run_diff_test("fsts/nvc/overlay_tb_issue_21.fst", &FstFilter::all());
 }
 
 #[test]

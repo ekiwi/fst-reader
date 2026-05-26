@@ -482,12 +482,32 @@ impl<R: Read + Seek> HeaderReader<R> {
         if let Some(table) = &mut self.time_table {
             let (_, mut time_chain) =
                 read_time_table(&mut self.input, file_offset, section_length)?;
-            // in the first section, we might need to include the start time
-            let is_first_section = table.is_empty();
-            if is_first_section && time_chain[0] > start_time {
-                table.push(start_time);
+            if !time_chain.is_empty() {
+                // in the first section, we might need to include the start time
+                let is_first_section = table.is_empty();
+                if is_first_section && time_chain[0] > start_time {
+                    table.push(start_time);
+                    println!("push({start_time})");
+                }
+
+                // NVC has duplicate time entries at the end of a block sometimes
+                let last = *time_chain.last().unwrap();
+                let second_last = time_chain.iter().rev().skip(1).next().cloned();
+                if let Some(second_last) = second_last
+                    && last == second_last
+                {
+                    time_chain.pop().unwrap();
+                }
+
+                // sometimes there is an overlap with the previous block
+                if let Some(prev_last) = table.last().cloned()
+                    && prev_last == time_chain[0]
+                {
+                    // remove duplicate entry
+                    table.pop().unwrap();
+                }
+                table.append(&mut time_chain);
             }
-            table.append(&mut time_chain);
             self.input.seek(SeekFrom::Start(file_offset + 4 * 8))?;
         }
         // go to the end of the section

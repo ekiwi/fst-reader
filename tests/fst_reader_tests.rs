@@ -23,16 +23,16 @@ fn run_load_test(filename: &str, _filter: &FstFilter) {
 fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
     let mut is_real = Vec::new();
     let mut hierarchy = Vec::new();
-    let foo = |entry: FstHierarchyEntry| {
+    let callback = |entry: FstHierarchyEntry| {
         // remember if variables are real valued
         if let FstHierarchyEntry::Var { tpe, handle, .. } = &entry {
-            let is_var_real = match tpe {
+            let is_var_real = matches!(
+                tpe,
                 FstVarType::Real
-                | FstVarType::RealParameter
-                | FstVarType::RealTime
-                | FstVarType::ShortReal => true,
-                _ => false,
-            };
+                    | FstVarType::RealParameter
+                    | FstVarType::RealTime
+                    | FstVarType::ShortReal
+            );
             let idx = handle.get_index();
             if is_real.len() <= idx {
                 is_real.resize(idx + 1, false);
@@ -43,7 +43,7 @@ fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
         let actual = hierarchy_to_str(&entry);
         hierarchy.push(actual);
     };
-    reader.read_hierarchy(foo).unwrap();
+    reader.read_hierarchy(callback).unwrap();
     hierarchy
 }
 

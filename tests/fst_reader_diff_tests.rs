@@ -277,7 +277,7 @@ extern "C" fn signal_change_callback(
     let data = unsafe { &mut *(data_ptr as *mut CallbackData) };
     let signal_idx = (handle - 1) as usize;
     let string = if data.is_real[signal_idx] {
-        let slic = unsafe { std::slice::from_raw_parts(value as *const u8, 8) };
+        let slic = unsafe { std::slice::from_raw_parts(value, 8) };
         let value = f64::from_le_bytes(slic.try_into().unwrap());
         format!("{value}")
     } else {

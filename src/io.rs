@@ -284,7 +284,7 @@ fn write_c_str_fixed_length(
     Ok(())
 }
 
-const RCV_STR: [u8; 8] = [b'x', b'z', b'h', b'u', b'w', b'l', b'-', b'?'];
+const RCV_STR: [u8; 8] = *b"xzhuwl-?";
 #[inline]
 pub(crate) fn one_bit_signal_value_to_char(vli: u32) -> u8 {
     if (vli & 1) == 0 {

@@ -491,7 +491,7 @@ impl<R: Read + Seek> HeaderReader<R> {
 
                 // NVC has duplicate time entries at the end of a block sometimes
                 let last = *time_chain.last().unwrap();
-                let second_last = time_chain.iter().rev().skip(1).next().cloned();
+                let second_last = time_chain.iter().rev().nth(1).cloned();
                 if let Some(second_last) = second_last
                     && last == second_last
                 {

@@ -17,7 +17,7 @@ fn main() {
         .read_hierarchy(|entry| match entry {
             fst_reader::FstHierarchyEntry::Var { handle, .. } => ids.push(handle),
             fst_reader::FstHierarchyEntry::Scope { .. } => {}
-            fst_reader::FstHierarchyEntry::UpScope { .. } => {}
+            fst_reader::FstHierarchyEntry::UpScope => {}
             _ => {}
         })
         .unwrap();

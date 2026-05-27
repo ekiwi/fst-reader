@@ -25,22 +25,19 @@ fn load_header<R: BufRead + Seek>(reader: &mut FstReader<R>) -> Vec<String> {
     let mut hierarchy = Vec::new();
     let foo = |entry: FstHierarchyEntry| {
         // remember if variables are real valued
-        match &entry {
-            FstHierarchyEntry::Var { tpe, handle, .. } => {
-                let is_var_real = match tpe {
-                    FstVarType::Real
-                    | FstVarType::RealParameter
-                    | FstVarType::RealTime
-                    | FstVarType::ShortReal => true,
-                    _ => false,
-                };
-                let idx = handle.get_index();
-                if is_real.len() <= idx {
-                    is_real.resize(idx + 1, false);
-                }
-                is_real[idx] = is_var_real;
+        if let FstHierarchyEntry::Var { tpe, handle, .. } = &entry {
+            let is_var_real = match tpe {
+                FstVarType::Real
+                | FstVarType::RealParameter
+                | FstVarType::RealTime
+                | FstVarType::ShortReal => true,
+                _ => false,
+            };
+            let idx = handle.get_index();
+            if is_real.len() <= idx {
+                is_real.resize(idx + 1, false);
             }
-            _ => {}
+            is_real[idx] = is_var_real;
         };
 
         let actual = hierarchy_to_str(&entry);

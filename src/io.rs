@@ -159,7 +159,7 @@ pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Writ
 #[inline]
 pub(crate) fn write_variant_i64(output: &mut impl Write, mut value: i64) -> WriteResult<usize> {
     // often, the value is small
-    if value <= 63 && value >= -64 {
+    if (-64..=63).contains(&value) {
         let byte = [value as u8 & 0x7f; 1];
         output.write_all(&byte)?;
         return Ok(1);
@@ -1724,7 +1724,7 @@ mod tests {
         #[test]
         fn test_read_write_blackout(mut blackouts: Vec<BlackoutData>) {
             // blackout times must be in increasing order => sort
-            blackouts.sort_by(|a, b| a.time.cmp(&b.time));
+            blackouts.sort_by_key(|a| a.time);
 
             // actual test
             let max_len = blackouts.len() * 5 + 3 * 8;
@@ -1867,7 +1867,7 @@ mod tests {
     fn test_read_write_hierarchy_entry() {
         // make sure that we can write and read long attributes
         let entry = FstHierarchyEntry::Comment {
-            string: "TEST ".repeat((8000 + 4) / 5),
+            string: "TEST ".repeat(8000_usize.div_ceil(5)),
         };
         read_write_hierarchy_entry(entry);
     }

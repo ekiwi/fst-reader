@@ -27,6 +27,7 @@ fn main() {
     reader
         .read_signals(&filter, |time_idx, handle, value| {
             std::hint::black_box((time_idx, handle, value));
+            Ok::<(), ()>(())
         })
         .unwrap();
 }

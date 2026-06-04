@@ -326,6 +326,7 @@ fn diff_signals<R: std::io::BufRead + std::io::Seek>(
         let expected = (exp_time, exp_handle as usize, exp_value);
         assert_eq!(actual, expected);
         // println!("{actual:?}");
+        Ok::<(), ()>(())
     };
     let filter = FstFilter::all();
     our_reader.read_signals(&filter, check).unwrap();

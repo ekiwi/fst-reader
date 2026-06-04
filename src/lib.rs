@@ -8,7 +8,7 @@ mod io;
 mod reader;
 mod types;
 
-pub use io::ReaderError;
+pub use io::{ReadSignalsError, ReaderError};
 pub use reader::{FstFilter, FstHeader, FstReader, FstSignalValue, is_fst_file};
 pub use types::{
     FstArrayType, FstEnumType, FstHierarchyEntry, FstPackType, FstScopeType, FstSignalHandle,

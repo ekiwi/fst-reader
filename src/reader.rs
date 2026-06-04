@@ -223,11 +223,11 @@ impl<R: BufRead + Seek> FstReader<R> {
     }
 
     /// Read signal values for a specific time interval.
-    pub fn read_signals(
+    pub fn read_signals<E>(
         &mut self,
         filter: &FstFilter,
-        callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
-    ) -> Result<()> {
+        callback: impl FnMut(u64, FstSignalHandle, FstSignalValue) -> std::result::Result<(), E>,
+    ) -> ReadSignalsResult<E> {
         // convert user filters
         let signal_count = self.meta.signals.len();
         let signal_mask = if let Some(signals) = &filter.include {
@@ -322,12 +322,12 @@ fn read_hierarchy(
     Ok(())
 }
 
-fn read_signals(
+fn read_signals<E>(
     input: &mut (impl Read + Seek),
     meta: &MetaData,
     filter: &DataFilter,
-    mut callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
-) -> Result<()> {
+    mut callback: impl FnMut(u64, FstSignalHandle, FstSignalValue) -> std::result::Result<(), E>,
+) -> ReadSignalsResult<E> {
     let mut reader = DataReader {
         input,
         meta,
@@ -658,14 +658,24 @@ impl<R: Read + Seek> HeaderReader<R> {
     }
 }
 
-struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> {
+struct DataReader<
+    'a,
+    R: Read + Seek,
+    E,
+    F: FnMut(u64, FstSignalHandle, FstSignalValue) -> std::result::Result<(), E>,
+> {
     input: &'a mut R,
     meta: &'a MetaData,
     filter: &'a DataFilter,
     callback: &'a mut F,
 }
 
-impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<'_, R, F> {
+impl<
+    R: Read + Seek,
+    E,
+    F: FnMut(u64, FstSignalHandle, FstSignalValue) -> std::result::Result<(), E>,
+> DataReader<'_, R, E, F>
+{
     fn read_value_changes(
         &mut self,
         section_kind: DataSectionKind,
@@ -673,7 +683,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
         section_length: u64,
         time_section_length: u64,
         time_table: &[u64],
-    ) -> Result<()> {
+    ) -> ReadSignalsResult<E> {
         let (max_handle, _) = read_variant_u64(&mut self.input)?;
         let vc_start = self.input.stream_position()?;
         let packtpe = ValueChangePackType::from_u8(read_u8(&mut self.input)?);
@@ -749,13 +759,15 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
                     1 => {
                         let value = one_bit_signal_value_to_char(vli);
                         let value_buf = [value];
-                        (self.callback)(*time, signal_handle, FstSignalValue::String(&value_buf));
+                        (self.callback)(*time, signal_handle, FstSignalValue::String(&value_buf))
+                            .map_err(ReadSignalsError::CallbackError)?;
                         0 // no additional bytes consumed
                     }
                     0 => {
                         let (len, skiplen2) = read_variant_u32(&mut mu_slice)?;
                         let value = mu_slice.get(..len as usize).ok_or_else(eof_error)?;
-                        (self.callback)(*time, signal_handle, FstSignalValue::String(value));
+                        (self.callback)(*time, signal_handle, FstSignalValue::String(value))
+                            .map_err(ReadSignalsError::CallbackError)?;
                         len + skiplen2
                     }
                     len => {
@@ -771,12 +783,14 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
                                 let value = mu_slice.get(..signal_len).ok_or_else(eof_error)?;
                                 (value, len)
                             };
-                            (self.callback)(*time, signal_handle, FstSignalValue::String(value));
+                            (self.callback)(*time, signal_handle, FstSignalValue::String(value))
+                                .map_err(ReadSignalsError::CallbackError)?;
                             len
                         } else {
                             assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
                             let value = read_f64(&mut mu_slice, self.meta.float_endian)?;
-                            (self.callback)(*time, signal_handle, FstSignalValue::Real(value));
+                            (self.callback)(*time, signal_handle, FstSignalValue::Real(value))
+                                .map_err(ReadSignalsError::CallbackError)?;
                             8
                         }
                     }
@@ -810,7 +824,7 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
         Ok(())
     }
 
-    fn read(&mut self) -> Result<()> {
+    fn read(&mut self) -> ReadSignalsResult<E> {
         let sections = self.meta.data_sections.clone();
         // filter out any sections which are not in our time window
         let relevant_sections = sections

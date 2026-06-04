@@ -139,7 +139,10 @@ fn test_multi_section_end_time_2sections() {
 
     let mut value_count = 0;
     reader
-        .read_signals(&FstFilter::all(), |_, _, _| value_count += 1)
+        .read_signals(&FstFilter::all(), |_, _, _| {
+            value_count += 1;
+            Ok::<(), ()>(())
+        })
         .unwrap();
     assert_eq!(value_count, 63); // golden value from libfst
 }
@@ -157,7 +160,10 @@ fn test_multi_section_end_time_3sections() {
 
     let mut value_count = 0;
     reader
-        .read_signals(&FstFilter::all(), |_, _, _| value_count += 1)
+        .read_signals(&FstFilter::all(), |_, _, _| {
+            value_count += 1;
+            Ok::<(), ()>(())
+        })
         .unwrap();
     assert_eq!(value_count, 93); // golden value from libfst
 }
@@ -174,10 +180,13 @@ fn test_truncated_3sections_reads_2_blocks() {
     assert_eq!(reader.get_header().end_time, 300);
 
     let mut value_count = 0;
-    let result = reader.read_signals(&FstFilter::all(), |_, _, _| value_count += 1);
+    let result = reader.read_signals(&FstFilter::all(), |_, _, _| {
+        value_count += 1;
+        Ok::<(), ()>(())
+    });
 
     assert!(
-        matches!(&result, Err(ReaderError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        matches!(&result, Err(ReadSignalsError::ReadError(ReaderError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof),
         "Expected UnexpectedEof from truncated block, got: {:?}",
         result
     );
@@ -199,9 +208,12 @@ fn test_incomplete_real_signal_type() {
     let mut real_count = 0;
     let mut string_count = 0;
     reader
-        .read_signals(&FstFilter::all(), |_, _, value| match value {
-            FstSignalValue::Real(_) => real_count += 1,
-            FstSignalValue::String(_) => string_count += 1,
+        .read_signals(&FstFilter::all(), |_, _, value| {
+            match value {
+                FstSignalValue::Real(_) => real_count += 1,
+                FstSignalValue::String(_) => string_count += 1,
+            }
+            Ok::<(), ()>(())
         })
         .unwrap();
 

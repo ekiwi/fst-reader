@@ -74,6 +74,22 @@ pub enum ReaderError {
 
 pub type ReadResult<T> = Result<T, ReaderError>;
 
+#[derive(Debug, Error)]
+pub enum ReadSignalsError<E = ()> {
+    #[error("Failed to read FST file.")]
+    ReadError(#[from] ReaderError),
+    #[error("The callback failed.")]
+    CallbackError(E),
+}
+
+impl<E> From<std::io::Error> for ReadSignalsError<E> {
+    fn from(value: std::io::Error) -> Self {
+        Self::ReadError(value.into())
+    }
+}
+
+pub type ReadSignalsResult<E> = Result<(), ReadSignalsError<E>>;
+
 #[cfg(test)]
 pub type WriteResult<T> = Result<T, ReaderError>;
 
@@ -1300,7 +1316,7 @@ fn delta_compress_time_table(table: &[u64]) -> WriteResult<Vec<u8>> {
 }
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub(crate) fn read_frame(
+pub(crate) fn read_frame<E>(
     input: &mut (impl Read + Seek),
     section_start: u64,
     section_length: u64,
@@ -1308,8 +1324,8 @@ pub(crate) fn read_frame(
     signal_filter: &BitMask,
     float_endian: FloatingPointEndian,
     start_time: u64,
-    callback: &mut impl FnMut(u64, FstSignalHandle, FstSignalValue),
-) -> ReadResult<()> {
+    callback: &mut impl FnMut(u64, FstSignalHandle, FstSignalValue) -> std::result::Result<(), E>,
+) -> ReadSignalsResult<E> {
     // we skip the section header (section_length, start_time, end_time, ???)
     input.seek(SeekFrom::Start(section_start + 4 * 8))?;
     let (uncompressed_length, _) = read_variant_u64(input)?;
@@ -1330,10 +1346,12 @@ pub(crate) fn read_frame(
                 len => {
                     if !signal.is_real() {
                         let value = read_bytes(&mut bytes, len as usize)?;
-                        callback(start_time, handle, FstSignalValue::String(&value));
+                        callback(start_time, handle, FstSignalValue::String(&value))
+                            .map_err(ReadSignalsError::CallbackError)?;
                     } else {
                         let value = read_f64(&mut bytes, float_endian)?;
-                        callback(start_time, handle, FstSignalValue::Real(value));
+                        callback(start_time, handle, FstSignalValue::Real(value))
+                            .map_err(ReadSignalsError::CallbackError)?;
                     }
                 }
             }

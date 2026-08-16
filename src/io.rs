@@ -70,6 +70,8 @@ pub enum ReaderError {
     MissingGeometry(),
     #[error("The FST file is incomplete: hierarchy block is missing.")]
     MissingHierarchy(),
+    #[error("Unexpected header section length: {0}")]
+    HeaderLength(u64),
 }
 
 pub type ReadResult<T> = Result<T, ReaderError>;
@@ -451,7 +453,30 @@ const HEADER_VERSION_MAX_LEN: usize = 128;
 const HEADER_DATE_MAX_LEN: usize = 119;
 pub(crate) fn read_header(input: &mut impl Read) -> ReadResult<(Header, FloatingPointEndian)> {
     let section_length = read_u64(input)?;
-    assert_eq!(section_length, HEADER_LENGTH);
+    if section_length == 0 {
+        // A writer that was killed before it could finalize the file leaves the
+        // header block zeroed out. Skip over it, the times are inferred from the
+        // data sections later.
+        read_bytes(input, (HEADER_LENGTH - 8) as usize)?;
+        let header = Header {
+            start_time: 0,
+            end_time: 0,
+            memory_used_by_writer: 0,
+            scope_count: 0,
+            var_count: 0,
+            max_var_id_code: 0,
+            vc_section_count: 0,
+            timescale_exponent: 0,
+            version: String::new(),
+            date: String::new(),
+            file_type: FileType::Verilog,
+            time_zero: 0,
+        };
+        return Ok((header, FloatingPointEndian::Little));
+    }
+    if section_length != HEADER_LENGTH {
+        return Err(ReaderError::HeaderLength(section_length));
+    }
     let start_time = read_u64(input)?;
     let end_time = read_u64(input)?;
     let float_endian = determine_f64_endian(input, DOUBLE_ENDIAN_TEST)?;
@@ -1707,6 +1732,27 @@ mod tests {
                 string
             );
         }
+    }
+
+    #[test]
+    fn test_read_zeroed_header() {
+        // header block of a file whose writer was killed before finalizing it
+        let buf = [0u8; HEADER_LENGTH as usize];
+        let (header, endian) = read_header(&mut buf.as_slice()).unwrap();
+        assert_eq!(endian, FloatingPointEndian::Little);
+        assert_eq!(header.start_time, 0);
+        assert_eq!(header.end_time, 0);
+        assert_eq!(header.var_count, 0);
+    }
+
+    #[test]
+    fn test_read_header_wrong_length() {
+        let mut buf = vec![];
+        write_u64(&mut buf, 42).unwrap();
+        assert!(matches!(
+            read_header(&mut buf.as_slice()),
+            Err(ReaderError::HeaderLength(42))
+        ));
     }
 
     proptest! {

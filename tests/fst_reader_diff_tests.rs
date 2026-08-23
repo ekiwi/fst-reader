@@ -449,6 +449,12 @@ fn diff_fst_writer_calyx_add_invoke() {
     run_diff_test("fsts/fst-writer/calyx_add_invoke.fst", &FstFilter::all());
 }
 
+/// Contains every variation of a 2-state encoded real.
+#[test]
+fn diff_fst_writer_packed_real() {
+    run_diff_test("fsts/fst-writer/packed_real.fst", &FstFilter::all());
+}
+
 #[test]
 fn diff_ghdl_alu() {
     run_diff_test("fsts/ghdl/alu.vcd.fst", &FstFilter::all());

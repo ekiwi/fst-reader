@@ -772,26 +772,25 @@ impl<
                     }
                     len => {
                         let signal_len = len as usize;
+                        let (mut value, len) = if (vli & 1) == 0 {
+                            // if bit0 is zero -> 2-state
+                            let read_len = signal_len.div_ceil(8);
+                            let bytes = mu_slice.get(..read_len).ok_or_else(eof_error)?;
+                            multi_bit_digital_signal_to_chars(bytes, signal_len, &mut buffer);
+                            (buffer.as_slice(), read_len as u32)
+                        } else {
+                            let value = mu_slice.get(..signal_len).ok_or_else(eof_error)?;
+                            (value, len)
+                        };
                         if !self.meta.signals[signal_id].is_real() {
-                            let (value, len) = if (vli & 1) == 0 {
-                                // if bit0 is zero -> 2-state
-                                let read_len = signal_len.div_ceil(8);
-                                let bytes = mu_slice.get(..read_len).ok_or_else(eof_error)?;
-                                multi_bit_digital_signal_to_chars(bytes, signal_len, &mut buffer);
-                                (buffer.as_slice(), read_len as u32)
-                            } else {
-                                let value = mu_slice.get(..signal_len).ok_or_else(eof_error)?;
-                                (value, len)
-                            };
                             (self.callback)(*time, signal_handle, FstSignalValue::String(value))
                                 .map_err(ReadSignalsError::CallbackError)?;
                             len
                         } else {
-                            assert_eq!(vli & 1, 1, "TODO: implement support for rare packed case");
-                            let value = read_f64(&mut mu_slice, self.meta.float_endian)?;
+                            let value = read_f64(&mut value, self.meta.float_endian)?;
                             (self.callback)(*time, signal_handle, FstSignalValue::Real(value))
                                 .map_err(ReadSignalsError::CallbackError)?;
-                            8
+                            len
                         }
                     }
                 };

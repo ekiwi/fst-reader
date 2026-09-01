@@ -228,6 +228,25 @@ impl<R: BufRead + Seek> FstReader<R> {
         filter: &FstFilter,
         callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
     ) -> Result<()> {
+        self.read_signals_internal(filter, false, callback)
+    }
+
+    /// Read signal values, including the initial frame before any changes at the
+    /// first timestamp.
+    pub fn read_signals_with_initial_frame(
+        &mut self,
+        filter: &FstFilter,
+        callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
+    ) -> Result<()> {
+        self.read_signals_internal(filter, true, callback)
+    }
+
+    fn read_signals_internal(
+        &mut self,
+        filter: &FstFilter,
+        include_initial_frame: bool,
+        callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
+    ) -> Result<()> {
         // convert user filters
         let signal_count = self.meta.signals.len();
         let signal_mask = if let Some(signals) = &filter.include {
@@ -249,18 +268,34 @@ impl<R: BufRead + Seek> FstReader<R> {
 
         // build and run reader
         match &mut self.input {
-            InputVariant::Original(input) => {
-                read_signals(input, &self.meta, &data_filter, callback)
-            }
-            InputVariant::Incomplete(input, _) => {
-                read_signals(input, &self.meta, &data_filter, callback)
-            }
-            InputVariant::UncompressedInMem(input) => {
-                read_signals(input, &self.meta, &data_filter, callback)
-            }
-            InputVariant::IncompleteUncompressedInMem(input, _) => {
-                read_signals(input, &self.meta, &data_filter, callback)
-            }
+            InputVariant::Original(input) => read_signals(
+                input,
+                &self.meta,
+                &data_filter,
+                include_initial_frame,
+                callback,
+            ),
+            InputVariant::Incomplete(input, _) => read_signals(
+                input,
+                &self.meta,
+                &data_filter,
+                include_initial_frame,
+                callback,
+            ),
+            InputVariant::UncompressedInMem(input) => read_signals(
+                input,
+                &self.meta,
+                &data_filter,
+                include_initial_frame,
+                callback,
+            ),
+            InputVariant::IncompleteUncompressedInMem(input, _) => read_signals(
+                input,
+                &self.meta,
+                &data_filter,
+                include_initial_frame,
+                callback,
+            ),
         }
     }
 }
@@ -326,12 +361,14 @@ fn read_signals(
     input: &mut (impl Read + Seek),
     meta: &MetaData,
     filter: &DataFilter,
+    include_initial_frame: bool,
     mut callback: impl FnMut(u64, FstSignalHandle, FstSignalValue),
 ) -> Result<()> {
     let mut reader = DataReader {
         input,
         meta,
         filter,
+        include_initial_frame,
         callback: &mut callback,
     };
     reader.read()
@@ -662,6 +699,7 @@ struct DataReader<'a, R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalVa
     input: &'a mut R,
     meta: &'a MetaData,
     filter: &'a DataFilter,
+    include_initial_frame: bool,
     callback: &'a mut F,
 }
 
@@ -832,9 +870,11 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
             let (time_section_length, time_table) =
                 read_time_table(&mut self.input, section.file_offset, section_length)?;
 
-            // only read frame if this is the first section and there is no other data for
-            // the start time
-            if is_first_section && (time_table.is_empty() || time_table[0] > start_time) {
+            if is_first_section
+                && (self.include_initial_frame
+                    || time_table.is_empty()
+                    || time_table[0] > start_time)
+            {
                 read_frame(
                     &mut self.input,
                     section.file_offset,

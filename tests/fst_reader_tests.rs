@@ -84,6 +84,39 @@ fn load_time_table_treadle_gcd() {
     assert_eq!(reader.get_time_table().unwrap(), expected);
 }
 
+#[test]
+fn read_initial_frame_before_changes_at_start_time() {
+    let read = |include_initial_frame| {
+        let file = std::fs::File::open("fsts/initial_frame_t0_change.fst").unwrap();
+        let mut reader = FstReader::open(std::io::BufReader::new(file)).unwrap();
+        let filter = FstFilter::filter_signals(vec![FstSignalHandle::from_index(1)]);
+        let mut values = Vec::new();
+        if include_initial_frame {
+            reader
+                .read_signals_with_initial_frame(&filter, |time, _, value| {
+                    let FstSignalValue::String(value) = value else {
+                        panic!("expected digital value");
+                    };
+                    values.push((time, String::from_utf8_lossy(value).into_owned()));
+                })
+                .unwrap();
+        } else {
+            reader
+                .read_signals(&filter, |time, _, value| {
+                    let FstSignalValue::String(value) = value else {
+                        panic!("expected digital value");
+                    };
+                    values.push((time, String::from_utf8_lossy(value).into_owned()));
+                })
+                .unwrap();
+        }
+        values
+    };
+
+    assert_eq!(read(false), [(0, "0".to_string())]);
+    assert_eq!(read(true), [(0, "x".to_string()), (0, "0".to_string())]);
+}
+
 fn find_fst_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).unwrap().filter_map(Result::ok) {

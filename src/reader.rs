@@ -704,9 +704,10 @@ impl<
         let mut scatter_pointer = vec![0u32; max_handle as usize];
         let mut tc_head = vec![0u32; std::cmp::max(1, time_table.len())];
 
-        for entry in signal_offsets.iter() {
-            // is the signal supposed to be included?
-            if self.filter.signals.is_set(entry.signal_idx) {
+        // Iterate only the signals we actually want rather than scanning all max_handle entries.
+        // For 1M signals loading 10, this is ~100,000x fewer offset table lookups per section.
+        for signal_idx in self.filter.signals.iter_set_indices() {
+            if let Some(entry) = signal_offsets.get_entry(signal_idx) {
                 // read all signal values
                 self.input.seek(SeekFrom::Start(vc_start + entry.offset))?;
                 let mut bytes =

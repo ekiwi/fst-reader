@@ -1385,6 +1385,7 @@ impl From<Vec<SignalDataLoc>> for OffsetTable {
 }
 
 impl OffsetTable {
+    #[allow(dead_code)]
     pub(crate) fn iter(&self) -> OffsetTableIter<'_> {
         OffsetTableIter {
             table: self,
@@ -1397,7 +1398,10 @@ impl OffsetTable {
         self.0.len()
     }
 
-    fn get_entry(&self, signal_idx: usize) -> Option<OffsetEntry> {
+    pub(crate) fn get_entry(&self, signal_idx: usize) -> Option<OffsetEntry> {
+        if signal_idx >= self.0.len() {
+            return None;
+        }
         match &self.0[signal_idx] {
             SignalDataLoc::None => None,
             // aliases should always directly point to an offset,
@@ -1419,6 +1423,7 @@ impl OffsetTable {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct OffsetTableIter<'a> {
     table: &'a OffsetTable,
     signal_idx: usize,
@@ -1569,7 +1574,7 @@ fn read_value_change_alias(
 
 /// Indicates the location of the signal data for the current block.
 #[derive(Debug, Copy, Clone)]
-enum SignalDataLoc {
+pub(crate) enum SignalDataLoc {
     /// The signal has no value changes in the current block.
     None,
     /// The signal has the same offset as another signal.

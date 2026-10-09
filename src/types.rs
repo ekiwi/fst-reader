@@ -464,6 +464,43 @@ impl BitMask {
         let (word_idx, bit_idx) = Self::word_and_bit_index(index);
         (self.inner[word_idx] >> bit_idx) & 1 == 1
     }
+
+    /// Iterate over the indices of all set bits, using word-at-a-time
+    /// `trailing_zeros` to skip over empty words in O(words) rather than O(bits).
+    pub(crate) fn iter_set_indices(&self) -> BitMaskSetIter<'_> {
+        BitMaskSetIter {
+            words: &self.inner,
+            word_idx: 0,
+            current_word: self.inner.first().copied().unwrap_or(0),
+        }
+    }
+}
+
+pub(crate) struct BitMaskSetIter<'a> {
+    words: &'a [BitMaskWord],
+    word_idx: usize,
+    current_word: BitMaskWord,
+}
+
+impl Iterator for BitMaskSetIter<'_> {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        // Skip over fully-zero words.
+        while self.current_word == 0 {
+            self.word_idx += 1;
+            if self.word_idx >= self.words.len() {
+                return None;
+            }
+            self.current_word = self.words[self.word_idx];
+        }
+        // LSB of current_word is the next set bit.
+        let bit = self.current_word.trailing_zeros() as usize;
+        // Clear that bit so the next call advances past it.
+        self.current_word &= self.current_word - 1;
+        Some(self.word_idx * BitMaskWord::BITS as usize + bit)
+    }
 }
 
 pub(crate) struct DataFilter {

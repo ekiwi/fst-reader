@@ -547,10 +547,52 @@ impl DataSectionKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::proptest;
+    use std::collections::HashSet;
 
     #[test]
     fn test_sizes() {
         // 1-bit to distinguish between real and bitvec + length
         assert_eq!(std::mem::size_of::<SignalInfo>(), 4);
+    }
+
+    fn do_test_bit_set(indices: Vec<usize>, length: usize) {
+        // clamp indices
+        let indices: Vec<_> = indices.into_iter().map(|i| i % length).collect();
+        let mut rust_set = HashSet::<usize>::default();
+        let mut our_set = BitMask::repeat(false, length);
+
+        // write to sets
+        for &index in &indices {
+            rust_set.insert(index);
+            our_set.set(index, true);
+        }
+
+        // check sets
+        for idx in 0..length {
+            let in_rust_set = rust_set.contains(&idx);
+            let in_out_set = our_set.is_set(idx);
+            assert_eq!(in_rust_set, in_out_set);
+        }
+
+        // test our iterator
+        for idx in our_set.iter_set_indices() {
+            assert!(rust_set.contains(&idx));
+        }
+        let mut dedup_indices = indices.clone();
+        dedup_indices.sort();
+        dedup_indices.dedup();
+        assert_eq!(dedup_indices.len(), our_set.iter_set_indices().count());
+
+        // the iterator should be ordered
+        let iter_indices: Vec<_> = our_set.iter_set_indices().collect();
+        assert_eq!(iter_indices, dedup_indices);
+    }
+
+    proptest! {
+        #[test]
+        fn test_prop_bit_set(indices: Vec<usize>, length: u16) {
+            do_test_bit_set(indices, length as usize);
+        }
     }
 }

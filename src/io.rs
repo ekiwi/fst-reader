@@ -1385,19 +1385,6 @@ impl From<Vec<SignalDataLoc>> for OffsetTable {
 }
 
 impl OffsetTable {
-    #[allow(dead_code)]
-    pub(crate) fn iter(&self) -> OffsetTableIter<'_> {
-        OffsetTableIter {
-            table: self,
-            signal_idx: 0,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
     pub(crate) fn get_entry(&self, signal_idx: usize) -> Option<OffsetEntry> {
         if signal_idx >= self.0.len() {
             return None;
@@ -1423,44 +1410,11 @@ impl OffsetTable {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) struct OffsetTableIter<'a> {
-    table: &'a OffsetTable,
-    signal_idx: usize,
-}
-
 #[derive(Debug)]
 pub(crate) struct OffsetEntry {
     pub(crate) signal_idx: usize,
     pub(crate) offset: u64,
     pub(crate) len: u32,
-}
-impl Iterator for OffsetTableIter<'_> {
-    type Item = OffsetEntry;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // get the first entry which is not None
-        while self.signal_idx < self.table.0.len()
-            && matches!(self.table.0[self.signal_idx], SignalDataLoc::None)
-        {
-            self.signal_idx += 1
-        }
-
-        // did we reach the end?
-        if self.signal_idx >= self.table.0.len() {
-            return None;
-        }
-
-        // read out result
-        let res = self.table.get_entry(self.signal_idx);
-        debug_assert!(res.is_some());
-
-        // increment id for next call
-        self.signal_idx += 1;
-
-        // return result
-        res
-    }
 }
 
 fn read_value_change_alias2(

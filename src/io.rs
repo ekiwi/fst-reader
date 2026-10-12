@@ -111,26 +111,40 @@ pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> 
     Err(ReaderError::Leb128(32))
 }
 
+/// Fast-path LEB128 signed i64 decoder operating directly on a `&[u8]` slice.
+/// Avoids `Read` trait dispatch and `io::Result` wrapping, and specialises the
+/// 1- and 2-byte cases which cover the vast majority of FST chain entries
+/// (small delta offsets and aliases).
 #[inline]
-pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
-    let mut byte = [0u8; 1];
-    let mut res = 0u64;
-    // 64bit / 7bit = ~9.1
-    for ii in 0..10 {
-        input.read_exact(&mut byte)?;
-        let value = (byte[0] & 0x7f) as u64;
+fn decode_variant_i64(bytes: &mut &[u8]) -> i64 {
+    let b0 = bytes[0];
+    if b0 & 0x80 == 0 {
+        *bytes = &bytes[1..];
+        let v = (b0 & 0x7f) as i64;
+        return if b0 & 0x40 != 0 { v | (!0i64 << 7) } else { v };
+    }
+    let b1 = bytes[1]; // valid: continuation bit means at least one more byte exists
+    if b1 & 0x80 == 0 {
+        *bytes = &bytes[2..];
+        let v = ((b0 & 0x7f) as i64) | (((b1 & 0x7f) as i64) << 7);
+        return if b1 & 0x40 != 0 { v | (!0i64 << 14) } else { v };
+    }
+    // Both b0 and b1 had continuation bits set; consume them and continue.
+    let mut res = ((b0 & 0x7f) as u64) | (((b1 & 0x7f) as u64) << 7);
+    *bytes = &bytes[2..];
+    for ii in 2..10u32 {
+        let b = bytes[0];
+        *bytes = &bytes[1..];
         let shift_by = 7 * ii;
-        res |= value << shift_by;
-        if (byte[0] & 0x80) == 0 {
-            // sign extend
-            let sign_bit_set = (byte[0] & 0x40) != 0;
-            if (shift_by + 7) < u64::BITS && sign_bit_set {
+        res |= ((b & 0x7f) as u64) << shift_by;
+        if b & 0x80 == 0 {
+            if (b & 0x40) != 0 && (shift_by + 7) < u64::BITS {
                 res |= u64::MAX << (shift_by + 7);
             }
-            return Ok(res as i64);
+            return res as i64;
         }
     }
-    Err(ReaderError::Leb128(64))
+    panic!("LEB128 i64 overflow");
 }
 
 #[inline]
@@ -1430,7 +1444,7 @@ fn read_value_change_alias2(
     while !chain_bytes.is_empty() {
         let kind = chain_bytes[0];
         if (kind & 1) == 1 {
-            let shval = read_variant_i64(&mut chain_bytes)? >> 1;
+            let shval = decode_variant_i64(&mut chain_bytes) >> 1;
             match shval.cmp(&0) {
                 Ordering::Greater => {
                     // a new incremental offset
@@ -1574,27 +1588,26 @@ mod tests {
     }
 
     #[test]
-    fn test_read_variant_i64() {
+    fn test_decode_variant_i64() {
         // a positive value from a real fst file (solution from gtkwave)
-        let in1 = [0x13];
-        assert_eq!(read_variant_i64(&mut in1.as_slice()).unwrap(), 19);
+        let in1 = [0x13u8];
+        assert_eq!(decode_variant_i64(&mut in1.as_slice()), 19);
         // a negative value from a real fst file (solution from gtkwave)
-        let in0 = [0x7b];
-        assert_eq!(read_variant_i64(&mut in0.as_slice()).unwrap(), -5);
+        let in0 = [0x7bu8];
+        assert_eq!(decode_variant_i64(&mut in0.as_slice()), -5);
     }
 
     #[test]
-    fn regression_test_read_write_variant_i64() {
-        do_test_read_write_variant_i64(-36028797018963969);
-        do_test_read_write_variant_i64(-4611686018427387905);
+    fn regression_test_decode_variant_i64() {
+        do_test_decode_variant_i64(-36028797018963969);
+        do_test_decode_variant_i64(-4611686018427387905);
     }
 
-    fn do_test_read_write_variant_i64(value: i64) {
-        let mut buf = std::io::Cursor::new(vec![0u8; 24]);
-        write_variant_i64(&mut buf, value).unwrap();
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let read_value = read_variant_i64(&mut buf).unwrap();
-        assert_eq!(read_value, value);
+    fn do_test_decode_variant_i64(value: i64) {
+        let mut encoded = Vec::new();
+        write_variant_i64(&mut encoded, value).unwrap();
+        let decoded = decode_variant_i64(&mut encoded.as_slice());
+        assert_eq!(decoded, value);
     }
 
     proptest! {
@@ -1608,8 +1621,8 @@ mod tests {
         }
 
          #[test]
-        fn test_read_write_variant_i64(value: i64) {
-            do_test_read_write_variant_i64(value);
+        fn test_decode_variant_i64_proptest(value: i64) {
+            do_test_decode_variant_i64(value);
         }
     }
 

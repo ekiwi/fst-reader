@@ -111,20 +111,32 @@ pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> 
     Err(ReaderError::Leb128(32))
 }
 
+/// Fast-path LEB128 signed i64 decoder operating directly on a `&[u8]` slice.
+/// Avoids `Read` trait dispatch and specialises the 1- and 2-byte cases which
+/// cover the vast majority of FST chain entries (small delta offsets and aliases).
 #[inline]
-pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
-    let mut byte = [0u8; 1];
+fn read_variant_i64(bytes: &mut &[u8]) -> ReadResult<i64> {
+    let b0 = bytes[0];
+    if b0 & 0x80 == 0 {
+        *bytes = &bytes[1..];
+        let v = (b0 & 0x7f) as i64;
+        return Ok(if b0 & 0x40 != 0 { v | (!0i64 << 7) } else { v });
+    }
+    let b1 = bytes[1]; // valid: continuation bit means at least one more byte exists
+    if b1 & 0x80 == 0 {
+        *bytes = &bytes[2..];
+        let v = ((b0 & 0x7f) as i64) | (((b1 & 0x7f) as i64) << 7);
+        return Ok(if b1 & 0x40 != 0 { v | (!0i64 << 14) } else { v });
+    }
+    // 3+ bytes: rare for FST chain offsets
     let mut res = 0u64;
-    // 64bit / 7bit = ~9.1
-    for ii in 0..10 {
-        input.read_exact(&mut byte)?;
-        let value = (byte[0] & 0x7f) as u64;
+    for ii in 0..10u32 {
+        let b = bytes[0];
+        *bytes = &bytes[1..];
         let shift_by = 7 * ii;
-        res |= value << shift_by;
-        if (byte[0] & 0x80) == 0 {
-            // sign extend
-            let sign_bit_set = (byte[0] & 0x40) != 0;
-            if (shift_by + 7) < u64::BITS && sign_bit_set {
+        res |= ((b & 0x7f) as u64) << shift_by;
+        if b & 0x80 == 0 {
+            if (b & 0x40) != 0 && (shift_by + 7) < u64::BITS {
                 res |= u64::MAX << (shift_by + 7);
             }
             return Ok(res as i64);
@@ -1592,8 +1604,9 @@ mod tests {
     fn do_test_read_write_variant_i64(value: i64) {
         let mut buf = std::io::Cursor::new(vec![0u8; 24]);
         write_variant_i64(&mut buf, value).unwrap();
-        buf.seek(SeekFrom::Start(0)).unwrap();
-        let read_value = read_variant_i64(&mut buf).unwrap();
+        let len = buf.position() as usize;
+        let inner = buf.into_inner();
+        let read_value = read_variant_i64(&mut &inner[..len]).unwrap();
         assert_eq!(read_value, value);
     }
 

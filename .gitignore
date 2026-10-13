@@ -3,3 +3,4 @@
 /.idea/
 /proptest-regressions/
 /lcov.info
+.DS_Store
